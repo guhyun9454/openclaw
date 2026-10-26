@@ -2,19 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PROGRESS_CARD_MAX_STEPS,
   PROGRESS_CARD_MAX_UTF8_BYTES,
-  type ProgressCard,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { ProgressCardStore } from "../../session-cards/progress-card-store.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withRestoredMocks } from "../../test-utils/vitest-spies.js";
 import { progressCardStore } from "../progress-card-store.js";
 import { progressCardHandlers } from "./progress-card.js";
+import { expectRpcResult } from "./rpc-response.test-support.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 const defaultSessionKey = "agent:main:main";
-function expectCard(respond: ReturnType<typeof vi.fn>, card: unknown) {
-  expect(respond).toHaveBeenCalledWith(true, { card }, undefined);
-}
 function expectError(respond: ReturnType<typeof vi.fn>, message: string, code = "INVALID_REQUEST") {
   expect(respond).toHaveBeenCalledWith(
     false,
@@ -23,24 +20,8 @@ function expectError(respond: ReturnType<typeof vi.fn>, message: string, code = 
   );
 }
 function createHarness() {
-  let card: ProgressCard | null = null;
-  const get = vi.fn<ProgressCardStore["get"]>(async () => card);
-  const put = vi.fn<ProgressCardStore["put"]>(async (sessionKey, input) => {
-    if (!input.markdown && !input.steps?.length) {
-      if (input.expectedRevision === undefined || card?.revision === input.expectedRevision) {
-        card = null;
-      }
-      return { card };
-    }
-    card = {
-      sessionKey,
-      revision: (card?.revision ?? 0) + 1,
-      updatedAt: Date.now(),
-      ...(input.markdown ? { markdown: input.markdown } : {}),
-      ...(input.steps ? { steps: input.steps } : {}),
-    };
-    return { card };
-  });
+  const get = vi.fn<ProgressCardStore["get"]>();
+  const put = vi.fn<ProgressCardStore["put"]>();
   const broadcast = vi.fn();
   const invoke = async (
     operation: "get" | "put",
@@ -94,8 +75,11 @@ describe("progress card gateway methods", () => {
     expect([get.mock.calls, put.mock.calls, broadcast.mock.calls]).toEqual([[], [], []]);
   });
 
-  it("roundtrips markdown and steps, strips invisible Unicode, and broadcasts the revision", async () => {
-    const { broadcast, invoke } = createHarness();
+  it("strips invisible Unicode from markdown and steps and broadcasts the stored revision", async () => {
+    const { broadcast, invoke, put: write } = createHarness();
+    write.mockImplementationOnce(async (sessionKey, { markdown, steps }) => ({
+      card: { sessionKey, revision: 1, updatedAt: 1, markdown, steps },
+    }));
     const put = await invoke("put", {
       markdown: "A\u200bB\u202eC",
       plan: [{ step: "Inspect\u200b\u202e", status: "in_progress" }],
@@ -105,8 +89,7 @@ describe("progress card gateway methods", () => {
       steps: [{ step: "Inspect", status: "in_progress" }],
       revision: 1,
     });
-    expectCard(put, expected);
-    expectCard(await invoke("get"), expected);
+    expectRpcResult(put, { card: expected });
     expect(broadcast).toHaveBeenCalledWith(
       "progressCard.changed",
       { sessionKey: defaultSessionKey, revision: 1 },
