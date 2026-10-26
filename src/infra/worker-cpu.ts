@@ -81,6 +81,7 @@ const trackedWorkers = resolveGlobalSingleton(Symbol.for("openclaw.workerCpuSour
     postgresPoolSelfRootCount: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)),
     postgresBridgeObservers: new Set<() => void>(),
     revision: 0,
+    cpuSources: undefined as ReturnType<typeof getTrackedWorkerCpuSources> | undefined,
     nextPoolId: 0,
     poolIds: new WeakMap<object, number>(),
     workers: new Map<WorkerCpuHandle, WorkerSource>(),
@@ -259,10 +260,11 @@ function forgetWorker(worker: WorkerCpuHandle): void {
   source.memoryFlush?.resolve();
   source.memoryPort?.close();
   trackedWorkers.workers.delete(worker);
+  trackedWorkers.revision++;
+  trackedWorkers.cpuSources = undefined;
   if (source.postgresBridgeCounters) {
     publishPostgresBridgeCounters();
   }
-  trackedWorkers.revision++;
 }
 
 function countWorkerStart(source: WorkerSource) {
@@ -407,6 +409,7 @@ function trackWorker(worker: WorkerCpuHandle): void {
   // Node emits "worker" inside the constructor, before the wrapper assigns its script.
   queueMicrotask(() => countWorkerStart(source));
   trackedWorkers.revision++;
+  trackedWorkers.cpuSources = undefined;
   worker.once("exit", () => forgetWorker(worker));
 }
 
@@ -420,15 +423,17 @@ function pruneExitedWorkers(): void {
 }
 
 export function getTrackedWorkerCpuSources(): {
-  revision: number;
-  currentRevision: () => number;
-  workers: { cpuUsage: () => Promise<NodeJS.CpuUsage | undefined> }[];
+  readonly revision: number;
+  readonly currentRevision: () => number;
+  readonly workers: readonly { cpuUsage: () => Promise<NodeJS.CpuUsage | undefined> }[];
 } {
-  return {
-    revision: getTrackedWorkerCpuRevision(),
+  // Pruning may invalidate membership when a consumer removed its exit listener.
+  const revision = getTrackedWorkerCpuRevision();
+  return (trackedWorkers.cpuSources ??= {
+    revision,
     currentRevision: getTrackedWorkerCpuRevision,
     workers: [...trackedWorkers.workers.values()],
-  };
+  });
 }
 
 function getTrackedWorkerCpuRevision(): number {
