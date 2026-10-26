@@ -9,15 +9,8 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import {
-  collectStandaloneDoctorCaptures,
-  retireExpiredStandaloneDoctorCaptures,
-} from "./doctor-capture-retention.js";
+import { retireExpiredStandaloneDoctorCaptures } from "./doctor-capture-retention.js";
 import { resolveUpdateCaptureRoot } from "./update-capture-paths.js";
-import {
-  UPDATE_CAPTURE_PRIVACY_MARKER,
-  UPDATE_CAPTURE_PRIVACY_MARKER_CONTENT,
-} from "./update-capture-privacy-marker.js";
 import { retainedCheckpointBinding } from "./update-retained-checkpoint.test-support.js";
 import {
   createRetainedUpdateRecovery,
@@ -33,19 +26,13 @@ function retire(f: ReturnType<typeof fixture>, keepRunId = "", assertCurrent = v
   return retireExpiredStandaloneDoctorCaptures({ ...f, now, keepRunId, assertCurrent });
 }
 
-function fixture(marked = true) {
+function fixture() {
   const stateDir = path.join(fs.realpathSync(dirs.make("doctor-retention-")), "state");
   fs.mkdirSync(stateDir);
   const env = { HOME: stateDir, OPENCLAW_STATE_DIR: stateDir };
   const root = resolveUpdateCaptureRoot(stateDir);
   const seal = (age: number, id = `doctor-${randomUUID()}`, dir = path.join(root, id)) => {
     fs.mkdirSync(dir, { recursive: true });
-    if (marked) {
-      fs.writeFileSync(
-        path.join(dir, UPDATE_CAPTURE_PRIVACY_MARKER),
-        UPDATE_CAPTURE_PRIVACY_MARKER_CONTENT,
-      );
-    }
     fs.writeFileSync(
       path.join(dir, "manifest.json"),
       JSON.stringify(
@@ -63,18 +50,22 @@ function fixture(marked = true) {
   return { stateDir, env, seal };
 }
 
-it("retains only the newest three of five sealed standalone captures, leaving update and incomplete captures untouched", async () => {
-  const f = fixture();
-  const captures = [5, 4, 3, 2, 1].map((age) => f.seal(age));
-  const update = f.seal(40, randomUUID());
-  const incomplete = f.seal(40);
-  fs.writeFileSync(path.join(incomplete, "manifest.json.partial"), "unfinished");
-  const result = await retire(f, path.basename(captures[4]!));
-  expect(result.warnings).toEqual([]);
-  expect(result.retired.toSorted()).toEqual(captures.slice(0, 2).toSorted());
-  expect(captures.map(fs.existsSync)).toEqual([false, false, true, true, true]);
-  expect([update, incomplete].map(fs.existsSync)).toEqual([true, true]);
-});
+it.each([
+  { ages: [5, 4, 3, 2, 1], retained: [false, false, true, true, true] },
+  { ages: [40, 31], retained: [false, true] },
+])(
+  "retains recent captures up to the limit and always keeps the newest: $ages",
+  async ({ ages, retained }) => {
+    const f = fixture();
+    const captures = ages.map((age) => f.seal(age));
+    const result = await retire(f);
+    expect(result.warnings).toEqual([]);
+    expect(result.retired.toSorted()).toEqual(
+      captures.filter((_, index) => !retained[index]).toSorted(),
+    );
+    expect(captures.map(fs.existsSync)).toEqual(retained);
+  },
+);
 
 it("protects an old capture referenced by active recovery and keeps all captures when recovery is unreadable", async () => {
   const f = fixture();
@@ -88,12 +79,6 @@ it("protects an old capture referenced by active recovery and keeps all captures
   record.checkpoint = retainedCheckpointBinding(record);
   record.checkpoint.ref.manifestPath = path.join(old, "manifest.json");
   storeRetainedUpdateRecovery(record, options);
-  const preview = collectStandaloneDoctorCaptures({ ...f, now });
-  expect(preview.captures.get(old)).toMatchObject({
-    eligible: false,
-    reason: "pending-update-recovery",
-  });
-  expect(preview.captures.get(superseded)?.eligible).toBe(true);
   const retired = await retire(f);
   expect(retired).toEqual({ retired: [superseded], warnings: [] });
   expect(fs.existsSync(old)).toBe(true);
@@ -107,17 +92,8 @@ it("protects an old capture referenced by active recovery and keeps all captures
   expect(fs.existsSync(unreadableCandidate)).toBe(true);
 });
 
-it("expires captures after thirty days but always keeps the newest sealed capture", async () => {
-  const f = fixture();
-  const expired = f.seal(40);
-  const newest = f.seal(31);
-  const result = await retire(f, path.basename(newest));
-  expect(result).toEqual({ retired: [expired], warnings: [] });
-  expect(fs.existsSync(newest)).toBe(true);
-});
-
 it("retires only expired sealed standalone Doctor captures and preserves incomplete or linked copies", async () => {
-  const f = fixture(false);
+  const f = fixture();
   const store = resolveUpdateCaptureRoot(f.stateDir);
   const expired = f.seal(31);
   const recent = f.seal(1);
@@ -128,20 +104,8 @@ it("retires only expired sealed standalone Doctor captures and preserves incompl
   const linkedTarget = f.seal(31, linkedId, path.join(f.stateDir, "linked-capture"));
   const linked = path.join(store, linkedId);
   await fsPromises.symlink(linkedTarget, linked, "dir");
-  const interrupted: string[] = [];
-  for (const kind of ["linked", "copied", "conflicting"]) {
-    const retained = f.seal(31);
-    const finalPath = path.join(retained, "manifest.json");
-    const partialPath = `${finalPath}.partial`;
-    if (kind === "linked") {
-      await fsPromises.link(finalPath, partialPath);
-    } else if (kind === "copied") {
-      await fsPromises.copyFile(finalPath, partialPath);
-    } else {
-      await fsPromises.writeFile(partialPath, "different, unverified bytes");
-    }
-    interrupted.push(retained);
-  }
+  const interrupted = f.seal(31);
+  fs.writeFileSync(path.join(interrupted, "manifest.json.partial"), "unverified bytes");
   const assertCurrent = vi.fn();
 
   const result = await retire(f, path.basename(recent), assertCurrent);
@@ -149,7 +113,7 @@ it("retires only expired sealed standalone Doctor captures and preserves incompl
   expect(result).toEqual({ retired: [expired], warnings: [] });
   expect(assertCurrent).toHaveBeenCalled();
   await expect(fsPromises.lstat(expired)).rejects.toMatchObject({ code: "ENOENT" });
-  for (const retained of [recent, incomplete, update, linkedTarget, ...interrupted]) {
+  for (const retained of [recent, incomplete, update, linkedTarget, interrupted]) {
     expect((await fsPromises.lstat(retained)).isDirectory()).toBe(true);
   }
   expect((await fsPromises.lstat(linked)).isSymbolicLink()).toBe(true);

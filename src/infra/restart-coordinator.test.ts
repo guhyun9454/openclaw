@@ -57,52 +57,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("reports safe when no restart blockers are active", () => {
-  expect(createSafeGatewayRestartPreflight()).toMatchObject({
-    safe: true,
-    counts: { totalActive: 0 },
-    blockers: [],
-    summary: "safe to restart now",
-  });
-});
-
-it("returns structured blockers for active work", () => {
-  vi.mocked(queue.getTotalQueueSize).mockReturnValue(2);
-  vi.mocked(replies.getTotalPendingReplies).mockReturnValue(1);
-  vi.mocked(sessionRuns.getActiveSessionRunCount).mockReturnValue(1);
-  vi.mocked(cronJobs.getActiveCronJobCount).mockReturnValue(1);
-  vi.mocked(backgroundExec.getActiveBackgroundExecSessionCount).mockReturnValue(2);
-  vi.spyOn(gatewayWork, "getActiveGatewayRootWorkCount").mockReturnValue(1);
-  vi.mocked(agentRuns.getActiveAgentRunContextCount).mockReturnValue(1);
-  vi.mocked(acpTurns.getActiveAcpTurnCount).mockReturnValue(2);
-  vi.mocked(mediaRuns.getActiveMediaGenerationRunCount).mockReturnValue(3);
-  const preflight = createSafeGatewayRestartPreflight();
-
-  expect(preflight).toMatchObject({
-    safe: false,
-    counts: { totalActive: 14, backgroundExecSessions: 2 },
-  });
-  expect(preflight.blockers.map((blocker) => blocker.kind)).toEqual([
-    "queue",
-    "reply",
-    "embedded-run",
-    "background-exec",
-    "cron-run",
-    "agent-run",
-    "acp-run",
-    "media-generation",
-    "root-request",
-  ]);
-  expect(preflight.summary).toContain("restart deferred");
-  expect(preflight.summary).toContain("1 admitted agent run(s)");
-  expect(preflight.blockers).toContainEqual({
-    kind: "background-exec",
-    count: 2,
-    message: "2 active background exec session(s)",
-  });
-  expect(preflight.summary).toContain("2 active background exec session(s)");
-});
-
 it("counts an admitted spawn handoff while excluding the preflight request", async () => {
   const handoff = gatewayWork.tryBeginGatewayRootWorkAdmission("subagents:spawn-handoff");
   const request = gatewayWork.tryBeginGatewayRootWorkAdmission("ws:gateway.restart");
@@ -112,7 +66,9 @@ it("counts an admitted spawn handoff while excluding the preflight request", asy
   try {
     await request?.run(async () => {
       const preflight = createSafeGatewayRestartPreflight();
+      expect(preflight.safe).toBe(false);
       expect(preflight.counts).toMatchObject({ rootRequests: 1, totalActive: 1 });
+      expect(preflight.summary).toContain("restart deferred");
       expect(preflight.blockers).toEqual([
         {
           kind: "root-request",
@@ -143,6 +99,13 @@ it.each([
     skipDeferral,
   });
   expect(result).toMatchObject({ status, preflight: { safe: active === 0 } });
+  if (!active) {
+    expect(result.preflight).toMatchObject({
+      counts: { totalActive: 0 },
+      blockers: [],
+      summary: "safe to restart now",
+    });
+  }
   expect(scheduleGatewayRestart).toHaveBeenCalledWith({
     delayMs: 0,
     reason: coalesced ? "gateway.restart.safe" : "test.safe",

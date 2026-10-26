@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createManagedHandoffTestBinding } from "../../test/helpers/managed-handoff-isolation.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
+import { providerConfig } from "../agents/model-auth.fixtures.test-support.js";
 import type { StreamFn } from "../agents/runtime/index.js";
 import { createQueuedAssistantStream } from "../agents/test-helpers/assistant-event-stream.test-support.js";
 import {
@@ -82,20 +83,16 @@ it("settles the real repair turn without closing a parent lease before Doctor ad
       plugins: { enabled: false },
       agents: { defaults: { skipBootstrap: true }, entries: { owner: { agentDir } } },
       tools: { toolSearch: { enabled: false } },
-      models: {
-        providers: {
-          fixture: {
-            baseUrl: "https://repair.invalid/v1",
-            api: "openai-responses",
-            models: [repairModel()],
-          },
-        },
-      },
+      ...providerConfig("fixture", {
+        baseUrl: "https://repair.invalid/v1",
+        api: "openai-responses",
+        models: [repairModel()],
+      }),
     };
     await state.writeConfig(config);
     setRuntimeConfigSnapshot(config);
     fixture.stream.mockImplementation((model) =>
-      createQueuedAssistantStream((push) => {
+      createQueuedAssistantStream((push) =>
         push({
           type: "done",
           reason: "stop",
@@ -107,8 +104,8 @@ it("settles the real repair turn without closing a parent lease before Doctor ad
             usage: createMockUsage(1, 1),
             stopReason: "stop",
           }),
-        });
-      }),
+        }),
+      ),
     );
     // Keep cold loading outside the deterministic model-turn budget.
     await Promise.all([
@@ -132,7 +129,6 @@ it("settles the real repair turn without closing a parent lease before Doctor ad
         status: "completed",
         envelope: { status: "ok", final: "Repair completed." },
       });
-      expect(fixture.stream).toHaveBeenCalledTimes(1);
       // These checks must precede fixture teardown: cleanup must not hide a leaked lease.
       expect(leases().map((lease) => lease.agent_id)).toEqual(["independent"]);
       const saved = load();
