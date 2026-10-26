@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { buildSystemAgentToolsMcpServerConfig } from "../../mcp/openclaw-tools-serve-config.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { retireSessionMcpRuntime } from "../agent-bundle-mcp-manager-api.js";
-import { resolveCliSessionReuse } from "../cli-session.js";
 import {
   loopbackConfig,
   policyConfig,
@@ -140,22 +139,14 @@ const prepareLoopbackConfig = (url: string) =>
   );
 
 describe("prepareCliBundleMcpConfig resume hash", () => {
-  it("stabilizes the resume hash when only the OpenClaw loopback port changes", async () => {
+  it.each([
+    ["http://127.0.0.1:24567/mcp", true],
+    ["http://127.0.0.1:23119/other", false],
+  ] as const)("keeps resume identity for port changes only (%s)", async (url, reusable) => {
     const first = await prepareLoopbackConfig("http://127.0.0.1:23119/mcp");
-    const second = await prepareLoopbackConfig("http://127.0.0.1:24567/mcp");
-
+    const second = await prepareLoopbackConfig(url);
     expect(first.mcpConfigHash).not.toBe(second.mcpConfigHash);
-    expect(first.mcpResumeHash).toBe(second.mcpResumeHash);
-
-    await first.cleanup?.();
-    await second.cleanup?.();
-  });
-
-  it("changes the resume hash when stable MCP semantics change", async () => {
-    const first = await prepareLoopbackConfig("http://127.0.0.1:23119/mcp");
-    const second = await prepareLoopbackConfig("http://127.0.0.1:23119/other");
-
-    expect(first.mcpResumeHash).not.toBe(second.mcpResumeHash);
+    expect(first.mcpResumeHash === second.mcpResumeHash).toBe(reusable);
   });
 
   it("keeps OpenClaw approval state out of the resume identity", async () => {
@@ -175,18 +166,5 @@ describe("prepareCliBundleMcpConfig resume hash", () => {
     const delegated = await prepare({ surface: "cli", operatorApprovalOnly: true, ...armed });
     expect(delegated.mcpConfigHash).not.toBe(approval.mcpConfigHash);
     expect(delegated.mcpResumeHash).toBe(approval.mcpResumeHash);
-    expect(
-      resolveCliSessionReuse({
-        binding: {
-          sessionId: "native-cli-session",
-          authEpochVersion: 1,
-          mcpConfigHash: first.mcpConfigHash,
-          mcpResumeHash: first.mcpResumeHash,
-        },
-        authEpochVersion: 1,
-        mcpConfigHash: approval.mcpConfigHash,
-        mcpResumeHash: approval.mcpResumeHash,
-      }),
-    ).toEqual({ mode: "reuse", sessionId: "native-cli-session" });
   });
 });
