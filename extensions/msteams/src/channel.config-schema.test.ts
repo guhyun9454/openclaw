@@ -13,6 +13,9 @@ function account(overrides: MSTeamsConfig = {}): MSTeamsConfig {
 function named(overrides: MSTeamsConfig = {}, root: MSTeamsConfig = {}): MSTeamsConfig {
   return { tenantId: "tenant-id", accounts: { support: account(overrides) }, ...root };
 }
+function sibling(appId: string, path: string, enabled = true): MSTeamsConfig {
+  return account({ appId, webhook: { path }, enabled });
+}
 function expectValid(config: unknown, valid: boolean) {
   expect(MSTeamsConfigSchema.safeParse(config).success).toBe(valid);
 }
@@ -20,13 +23,11 @@ function expectIssue(config: MSTeamsConfig, key: string, message: string) {
   const result = MSTeamsConfigSchema.safeParse(config);
   expect(result.success).toBe(false);
   if (!result.success) {
-    expect(result.error.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: ["accounts", key],
-          message: expect.stringContaining(message),
-        }),
-      ]),
+    expect(result.error.issues).toContainEqual(
+      expect.objectContaining({
+        path: ["accounts", key],
+        message: expect.stringContaining(message),
+      }),
     );
   }
 }
@@ -57,18 +58,16 @@ describe("msteams config schema", () => {
 
   it("rejects named Teams bot accounts with duplicate canonical account ids", () => {
     expectIssue(
-      {
-        tenantId: "tenant-id",
-        webhook: { path: "/api/messages" },
-        accounts: {
-          "Support Bot": account(),
-          "support-bot": account({
-            appId: "support-shadow-app-id",
-            appPassword: "support-shadow-secret",
-            webhook: { path: "/hooks/3980" },
-          }),
+      named(
+        {},
+        {
+          webhook: { path: "/api/messages" },
+          accounts: {
+            "Support Bot": account(),
+            "support-bot": sibling("support-shadow-app-id", "/hooks/3980"),
+          },
         },
-      },
+      ),
       "support-bot",
       'duplicate canonical account id "support-bot"',
     );
@@ -76,18 +75,14 @@ describe("msteams config schema", () => {
 
   it("rejects simultaneous root and canonical default account alias identity definitions", () => {
     expectIssue(
-      {
-        appId: "root-app-id",
-        appPassword: "root-secret",
-        tenantId: "tenant-id",
-        accounts: {
-          Default: account({
-            appId: "default-app-id",
-            appPassword: "default-secret",
-            webhook: { path: "/hooks/3978" },
-          }),
+      named(
+        {},
+        {
+          appId: "root-app-id",
+          appPassword: "root-secret",
+          accounts: { Default: sibling("default-app-id", "/hooks/3978") },
         },
-      },
+      ),
       "Default",
       "default Teams identity",
     );
@@ -123,22 +118,15 @@ describe("msteams config schema", () => {
 
   it("allows duplicate webhook paths when one account is disabled", () => {
     expectValid(
-      {
-        tenantId: "tenant-id",
-        accounts: {
-          default: account({
-            appId: "primary-app-id",
-            appPassword: "primary-secret",
-            webhook: { path: "/hooks/3978" },
-          }),
-          secondary: account({
-            enabled: false,
-            appId: "secondary-app-id",
-            appPassword: "secondary-secret",
-            webhook: { path: "/hooks/3978" },
-          }),
+      named(
+        {},
+        {
+          accounts: {
+            default: sibling("primary-app-id", "/hooks/3978"),
+            secondary: sibling("secondary-app-id", "/hooks/3978", false),
+          },
         },
-      },
+      ),
       true,
     );
   });

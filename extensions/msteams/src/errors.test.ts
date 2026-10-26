@@ -1,4 +1,3 @@
-// Msteams tests cover errors plugin behavior.
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,6 +11,10 @@ function replaySafeRetryAfterMs(error: unknown): number | undefined {
   const classification = classifyMSTeamsSendError(error);
   return classification.kind === "replay-safe" ? classification.retryAfterMs : undefined;
 }
+
+const classify = (statusCode: number) => classifyMSTeamsSendError({ statusCode });
+const hint = (statusCode: number) => formatMSTeamsSendErrorHint(classify(statusCode));
+const guidance = (statusCode: number) => formatMSTeamsDeliveryFailureGuidance(classify(statusCode));
 
 describe("msteams errors", () => {
   it.each([
@@ -55,51 +58,23 @@ describe("msteams errors", () => {
   });
 
   it("classifies auth errors", () => {
-    expect(classifyMSTeamsSendError({ statusCode: 401 }).kind).toBe("auth");
-    expect(classifyMSTeamsSendError({ statusCode: 403 }).kind).toBe("auth");
+    expect(classify(401).kind).toBe("auth");
+    expect(classify(403).kind).toBe("auth");
   });
 
   it("retains the normalized retry delay on replay-safe rate limits", () => {
     const result = classifyMSTeamsSendError({ statusCode: 429, retryAfterMs: 1500 });
-    expect(result.kind).toBe("replay-safe");
-    expect(result.statusCode).toBe(429);
-    expect(replaySafeRetryAfterMs({ statusCode: 429, retryAfterMs: 1500 })).toBe(1500);
+    expect(result).toMatchObject({ kind: "replay-safe", statusCode: 429, retryAfterMs: 1500 });
   });
 
-  it("does not parse partial retry-after values", () => {
-    expect(
-      replaySafeRetryAfterMs({
-        statusCode: 429,
-        response: { headers: { "retry-after": "2 seconds" } },
-      }),
-    ).toBeUndefined();
-    expect(
-      replaySafeRetryAfterMs({
-        statusCode: 429,
-        response: { headers: new Headers({ "retry-after": "3 seconds" }) },
-      }),
-    ).toBeUndefined();
-  });
-
-  it("ignores unsafe retry-after magnitudes", () => {
-    expect(
-      replaySafeRetryAfterMs({
-        statusCode: 429,
-        retryAfterMs: Number.MAX_SAFE_INTEGER + 1,
-      }),
-    ).toBeUndefined();
-    expect(
-      replaySafeRetryAfterMs({
-        statusCode: 429,
-        response: { headers: { "retry-after": "9007199254741" } },
-      }),
-    ).toBeUndefined();
-    expect(
-      replaySafeRetryAfterMs({
-        statusCode: 429,
-        response: { headers: new Headers({ "retry-after": "9007199254741" }) },
-      }),
-    ).toBeUndefined();
+  it.each([
+    { response: { headers: { "retry-after": "2 seconds" } } },
+    { response: { headers: new Headers({ "retry-after": "3 seconds" }) } },
+    { retryAfterMs: Number.MAX_SAFE_INTEGER + 1 },
+    { response: { headers: { "retry-after": "9007199254741" } } },
+    { response: { headers: new Headers({ "retry-after": "9007199254741" }) } },
+  ])("rejects partial or unsafe retry delays: %j", (fields) => {
+    expect(replaySafeRetryAfterMs({ statusCode: 429, ...fields })).toBeUndefined();
   });
 
   it("does not parse partial or fractional status codes", () => {
@@ -111,44 +86,32 @@ describe("msteams errors", () => {
   });
 
   it.each([408, 504])("classifies HTTP %i as delivery-ambiguous", (statusCode) => {
-    const classification = classifyMSTeamsSendError({ statusCode });
+    const classification = classify(statusCode);
     expect(classification).toMatchObject({
       kind: "ambiguous",
       source: "http",
       statusCode,
     });
-    expect(formatMSTeamsSendErrorHint(classification)).toContain("outcome is unknown");
-    expect(formatMSTeamsSendErrorHint(classification)).not.toMatch(/retry|resend/iu);
-    expect(formatMSTeamsDeliveryFailureGuidance(classification)).toContain(
-      "may already have succeeded",
-    );
-    expect(formatMSTeamsDeliveryFailureGuidance(classification)).not.toContain(
-      "Retrying later may succeed",
-    );
+    expect(hint(statusCode)).toContain("outcome is unknown");
+    expect(hint(statusCode)).not.toMatch(/retry|resend/iu);
+    expect(guidance(statusCode)).toContain("may already have succeeded");
+    expect(guidance(statusCode)).not.toContain("Retrying later may succeed");
   });
 
   it("keeps model guidance aligned with replay safety", () => {
-    expect(
-      formatMSTeamsDeliveryFailureGuidance(classifyMSTeamsSendError({ statusCode: 429 })),
-    ).toBe("The request was rate-limited before delivery; retrying later may succeed.");
-    expect(
-      formatMSTeamsDeliveryFailureGuidance(classifyMSTeamsSendError({ statusCode: 401 })),
-    ).toBeUndefined();
+    expect(guidance(429)).toBe(
+      "The request was rate-limited before delivery; retrying later may succeed.",
+    );
+    expect(guidance(401)).toBeUndefined();
   });
 
   it("classifies permanent 4xx errors", () => {
-    const result = classifyMSTeamsSendError({ statusCode: 400 });
-    expect(result.kind).toBe("permanent");
-    expect(result.statusCode).toBe(400);
+    expect(classify(400)).toMatchObject({ kind: "permanent", statusCode: 400 });
   });
 
   it("provides actionable hints for common cases", () => {
-    expect(formatMSTeamsSendErrorHint(classifyMSTeamsSendError({ statusCode: 401 }))).toContain(
-      "msteams",
-    );
-    expect(formatMSTeamsSendErrorHint(classifyMSTeamsSendError({ statusCode: 429 }))).toContain(
-      "throttled",
-    );
+    expect(hint(401)).toContain("msteams");
+    expect(hint(429)).toContain("throttled");
     expect(
       formatMSTeamsSendErrorHint(
         classifyMSTeamsSendError({
