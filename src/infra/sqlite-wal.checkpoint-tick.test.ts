@@ -65,17 +65,14 @@ describe("sqlite WAL checkpoint tick", () => {
 
       const prepare = vi.spyOn(db, "prepare");
       const exec = vi.spyOn(db, "exec");
-      try {
-        await cancelSqliteWalWriteAdmission(db);
-        expect(cancelled).toBe(1);
-        await maintenance.stop();
-        expect(maintenance.close()).toBe(false);
-        expect(prepare).not.toHaveBeenCalled();
-        expect(exec).not.toHaveBeenCalled();
-      } finally {
-        prepare.mockRestore();
-        exec.mockRestore();
-      }
+      await cancelSqliteWalWriteAdmission(db);
+      expect(cancelled).toBe(1);
+      await maintenance.stop();
+      expect(maintenance.close()).toBe(false);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(exec).not.toHaveBeenCalled();
+      prepare.mockRestore();
+      exec.mockRestore();
       expect(pragma("wal_autocheckpoint")).toBe(0);
       expect(clock.armedAtMs).toBeNull();
     },
@@ -140,15 +137,12 @@ describe("sqlite WAL checkpoint tick", () => {
 
     const reads = resources.count(db, "timeout", /\bbusy_timeout\b/iu);
     const exec = vi.spyOn(db, "exec");
-    try {
-      await vi.advanceTimersByTimeAsync(10_000);
-      await settle();
-      expect(reads.counts.timeout).toBe(0);
-      expect(exec.mock.calls.some(([sql]) => /\bbusy_timeout\b/iu.test(sql))).toBe(false);
-    } finally {
-      reads.restore();
-      exec.mockRestore();
-    }
+    await vi.advanceTimersByTimeAsync(10_000);
+    await settle();
+    expect(reads.counts.timeout).toBe(0);
+    expect(exec.mock.calls.some(([sql]) => /\bbusy_timeout\b/iu.test(sql))).toBe(false);
+    reads.restore();
+    exec.mockRestore();
     expect(readSqliteBusyTimeout(db)).toBe(1_000);
 
     const ticked = expectDefined(maintenance.health, "WAL tick health");

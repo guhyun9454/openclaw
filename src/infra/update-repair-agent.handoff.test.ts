@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createManagedHandoffTestBinding } from "../../test/helpers/managed-handoff-isolation.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { StreamFn } from "../agents/runtime/index.js";
+import { createQueuedAssistantStream } from "../agents/test-helpers/assistant-event-stream.test-support.js";
 import {
   buildEmbeddedRunnerAssistant,
   createMockUsage,
@@ -12,7 +13,6 @@ import {
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import { readActiveOpenClawAgentDatabaseLeasesReadOnly } from "../state/openclaw-agent-db-lease.js";
 import { createOpenClawDatabaseMaintenanceScope as createMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { withOpenClawTestState as withState } from "../test-utils/openclaw-test-state.js";
@@ -94,10 +94,9 @@ it("settles the real repair turn without closing a parent lease before Doctor ad
     };
     await state.writeConfig(config);
     setRuntimeConfigSnapshot(config);
-    fixture.stream.mockImplementation((model) => {
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => {
-        stream.push({
+    fixture.stream.mockImplementation((model) =>
+      createQueuedAssistantStream((push) => {
+        push({
           type: "done",
           reason: "stop",
           message: buildEmbeddedRunnerAssistant({
@@ -109,10 +108,8 @@ it("settles the real repair turn without closing a parent lease before Doctor ad
             stopReason: "stop",
           }),
         });
-        stream.end();
-      });
-      return stream;
-    });
+      }),
+    );
     // Keep cold loading outside the deterministic model-turn budget.
     await Promise.all([
       import("../agents/embedded-agent.js"),

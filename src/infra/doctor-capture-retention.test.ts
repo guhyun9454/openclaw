@@ -4,6 +4,7 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createMissingConfigRecoveryManifest } from "../commands/update-recovery-manifest.test-support.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -28,28 +29,6 @@ const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeOpenClawStateDatabaseForTest());
 const now = Date.parse("2026-10-16T12:00:00Z");
 
-function captureManifest(runId: string, ageDays: number, stateDir: string) {
-  const configPath = path.join(stateDir, "openclaw.json");
-  return JSON.stringify({
-    schemaVersion: 2,
-    kind: "update-recovery",
-    generation: { kind: "baseline" },
-    databases: [],
-    runId,
-    installRoot: stateDir,
-    stateDir,
-    configPath,
-    configPaths: [configPath],
-    creator: { host: "fixture", pid: 1, startIdentity: "1" },
-    drivers: [],
-    createdAt: new Date(now - ageDays * 86_400_000).toISOString(),
-    roots: [configPath],
-    excludedRoots: [],
-    protectedPaths: [configPath],
-    entries: [{ kind: "missing", sourcePath: configPath, sqlite: false, directory: false }],
-  });
-}
-
 function retire(f: ReturnType<typeof fixture>, keepRunId = "", assertCurrent = vi.fn()) {
   return retireExpiredStandaloneDoctorCaptures({ ...f, now, keepRunId, assertCurrent });
 }
@@ -67,7 +46,18 @@ function fixture(marked = true) {
         UPDATE_CAPTURE_PRIVACY_MARKER_CONTENT,
       );
     }
-    fs.writeFileSync(path.join(dir, "manifest.json"), captureManifest(id, age, stateDir));
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify(
+        createMissingConfigRecoveryManifest({
+          runId: id,
+          installRoot: stateDir,
+          stateDir,
+          configPath: path.join(stateDir, "openclaw.json"),
+          createdAt: new Date(now - age * 86_400_000).toISOString(),
+        }),
+      ),
+    );
     return dir;
   };
   return { stateDir, env, seal };
