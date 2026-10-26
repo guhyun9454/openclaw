@@ -1,7 +1,8 @@
 import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { generateIdentity, type Verdict } from "../protocol/index.js";
+import reefChannelEntry from "../index.js";
+import { generateIdentity, seal, type Verdict } from "../protocol/index.js";
 import { MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
 import { openReefAuditStore } from "./audit-state.js";
 import { handleReefCommand } from "./commands.js";
@@ -14,16 +15,26 @@ import {
   peerTrust,
   reefKeys,
   resetFlowStoresForTests,
+  transport,
 } from "./flow.test-helpers.js";
 import { ReefFriendManager } from "./friends.js";
 import { createReefRuntimeAuthority } from "./runtime.js";
-import { getReefReviewOperationState } from "./state.js";
-import { ReefTransportClient } from "./transport.js";
+import {
+  getReefReviewOperationState,
+  openStores,
+  REEF_DELIVERED_MAX_ENTRIES,
+  REEF_DELIVERED_NAMESPACE,
+  REEF_DELIVERED_TTL_MS,
+} from "./state.js";
+import { createRuntime } from "./state.test-support.js";
+import { ReefInboxConnection, ReefTransportClient } from "./transport.js";
+import { createClient, parseRequestUrl } from "./transport.test-helpers.js";
 import { openReefTrustStore } from "./trust-store.js";
+import type { InboxEntry } from "./types.js";
 
 describe("Reef worker outbound composition", () => {
   const cfg = config();
-  const peer = generateIdentity();
+  const alice = generateIdentity();
   const keys = reefKeys();
   const classify = guard(allow);
   const authority = createReefRuntimeAuthority();
@@ -52,7 +63,7 @@ describe("Reef worker outbound composition", () => {
     stores = flowStores(undefined, 1);
     trusted = openReefTrustStore(stores.runtime, cfg);
     audit = openReefAuditStore(stores.runtime, new Uint8Array(32).fill(1));
-    await trusted.set("alice", peerTrust(peer));
+    await trusted.set("alice", peerTrust(alice));
     flow = makeFlow();
     authority.activate({
       flow,
@@ -66,7 +77,7 @@ describe("Reef worker outbound composition", () => {
   });
   beforeEach(async () => {
     await getReefReviewOperationState(stores.reviews)!.store.clear();
-    await trusted.set("alice", peerTrust(peer));
+    await trusted.set("alice", peerTrust(alice));
     classify.classify.mockReset().mockResolvedValue(allow);
     fetcher.mockClear();
   });
@@ -82,7 +93,7 @@ describe("Reef worker outbound composition", () => {
     classify.classify.mockResolvedValueOnce({ ...allow, decision: "review" });
     await expect(send(id)).rejects.toMatchObject({ reviewOutcome: "pending" });
     const [review] = await stores.reviews.list();
-    expect(review?.id).toBe(id);
+    expect(review).toMatchObject({ id, from: "bob#1", to: "alice#1", direction: "outbound" });
     return { id, digest: review!.approvalDigest };
   }
   async function events(id: string) {
@@ -98,14 +109,33 @@ describe("Reef worker outbound composition", () => {
     }
   }
 
-  it("lists pending reviews and refuses owner commands after revocation", async () => {
+  it("gates owner commands, lists reviews and rejects revoked authority", async () => {
+    const registerCommand = vi.fn();
+    reefChannelEntry.register({ registrationMode: "tool-discovery", registerCommand } as never);
+    const command: typeof handleReefCommand = registerCommand.mock.calls[0]![0].handler;
     const { digest } = await requestReview();
-    await expect(handleReefCommand({ args: "review list" })).resolves.toEqual({
+    const run = (args: string, senderIsOwner = false) => command({ args, senderIsOwner });
+    const flowSend = vi.spyOn(flow, "send");
+    const approve = `review approve ${digest}`;
+    const autonomy = "friend autonomy alice extended";
+    for (const args of [
+      autonomy,
+      approve,
+      "friend code",
+      "friend request alice code",
+      "friend remove alice",
+    ]) {
+      expect(await run(args)).toEqual({
+        text: "Only an authorized owner can change Reef friends or decide reviews. Ask an owner; friendship changes can also use openclaw reef locally.",
+      });
+    }
+    expect(await trusted.get("alice")).toEqual(peerTrust(alice));
+    expect(await command({ args: "review list" })).toEqual({
       text: `${digest} outbound bob#1 -> alice#1 safe`,
     });
     for (const action of ["approve", "deny"]) {
       await expect(
-        handleReefCommand({
+        command({
           args: `review ${action} ${digest}`,
           senderIsOwner: true,
           assertOwnerCurrent: () => {
@@ -116,12 +146,31 @@ describe("Reef worker outbound composition", () => {
       expect((await stores.reviews.observeDecision(digest)).value).toBe("pending");
     }
     expect(fetcher).not.toHaveBeenCalled();
+    fetcher.mockResolvedValueOnce(Response.json({ friendships: [] }));
+    expect(await run("friend list")).toEqual({ text: "No Reef friends." });
+    expect(await run(autonomy, true)).toEqual({
+      text: "Reef friend @alice autonomy set to extended.",
+    });
+    expect((await trusted.get("alice"))?.autonomy).toBe("extended");
+    expect(await run(approve, true)).toEqual({
+      text: "Reef review approved. Retry the identical message to re-run the guard.",
+    });
+    expect((await stores.reviews.observeDecision(digest)).value).toEqual({ approved: true });
+    expect(await run("config relayUrl https://attacker.example", true)).toEqual({
+      text: expect.stringContaining("Usage: /reef friend"),
+    });
+    expect(flowSend).not.toHaveBeenCalled();
   });
 
-  it("persists proposal, verdict, envelope and exact delivery without host SQL", async () => {
-    const id = prepareReefMessageId();
-    const hostSql = observeHostDataSql();
+  it.each([false, true])("persists a send without host SQL (approved=%s)", async (approved) => {
     const firstSecond = Math.floor(Date.now() / 1000);
+    const { id, digest } = approved ? await requestReview() : { id: prepareReefMessageId() };
+    if (digest) {
+      classify.classify.mockResolvedValue({ ...allow, decision: "review" });
+      await stores.reviews.decide(digest, true);
+    }
+    classify.classify.mockClear();
+    const hostSql = observeHostDataSql();
     try {
       expect(await send(id)).toBe(id);
       for (const call of hostSql.calls) {
@@ -130,22 +179,23 @@ describe("Reef worker outbound composition", () => {
     } finally {
       hostSql.restore();
     }
+    expect(classify.classify).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledOnce();
     const entries = (await audit.entries()).filter(
       (entry) => isRecord(entry.event.payload) && entry.event.payload.id === id,
     );
-    expect(entries.map((entry) => entry.event.type)).toEqual([
-      "proposal",
-      "guard_verdict",
-      "envelope",
-    ]);
+    expect(entries.map((entry) => entry.event.type)).toEqual(
+      approved
+        ? ["proposal", "guard_verdict", "proposal", "review_approval", "guard_verdict", "envelope"]
+        : ["proposal", "guard_verdict", "envelope"],
+    );
     for (const entry of entries) {
       expect(entry.event.ts).toBeGreaterThanOrEqual(firstSecond);
       expect(entry.event.ts).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
     }
     const delivery = (await trusted.readOutboundDelivery("alice", id))?.delivery;
     expect(delivery).toMatchObject({
-      recipient: { keyEpoch: 1, ed25519PublicKey: peer.signing.publicKey },
+      recipient: { keyEpoch: 1, ed25519PublicKey: alice.signing.publicKey },
     });
     expect(delivery?.bodyHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(delivery?.textHash).toMatch(/^[a-f0-9]{64}$/u);
@@ -207,24 +257,17 @@ describe("Reef worker outbound composition", () => {
 
   it("does not reuse a durable approval across recipients", async () => {
     await trusted.set("carol", peerTrust(generateIdentity()));
+    const { id, digest } = await requestReview();
     classify.classify.mockResolvedValue({ ...allow, decision: "review" });
-    const id = prepareReefMessageId();
-    await expect(flow.send("alice", "identical body", { messageId: id })).rejects.toMatchObject({
+    await stores.reviews.decide(digest, true);
+    await expect(
+      flow.send("carol", "private coordination", { messageId: id }),
+    ).rejects.toMatchObject({
       reviewOutcome: "pending",
     });
-    const [review] = await stores.reviews.list();
-    expect(review).toMatchObject({ id, from: "bob#1", to: "alice#1", direction: "outbound" });
-    await stores.reviews.decide(review!.approvalDigest, true);
-    await expect(flow.send("carol", "identical body", { messageId: id })).rejects.toMatchObject({
-      reviewOutcome: "pending",
-    });
-    const reviews = await stores.reviews.list();
-    const carolReview = reviews.find((entry) => entry.to === "carol#1");
-    expect(carolReview).toMatchObject({ id, direction: "outbound" });
-    expect(carolReview?.approvalDigest).not.toBe(review!.approvalDigest);
-    expect((await stores.reviews.observeDecision(carolReview!.approvalDigest)).value).toBe(
-      "pending",
-    );
+    const [carolReview] = await stores.reviews.list();
+    expect(carolReview).toMatchObject({ id, to: "carol#1", direction: "outbound" });
+    expect(carolReview?.approvalDigest).not.toBe(digest);
     await expectNoDelivery(id, ["alice", "carol"]);
   });
 
@@ -237,28 +280,10 @@ describe("Reef worker outbound composition", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("reclassifies an approved review once and commits its approved send", async () => {
-    const { id, digest } = await requestReview();
-    classify.classify.mockResolvedValue({ ...allow, decision: "review" });
-    await stores.reviews.decide(digest, true);
-    classify.classify.mockClear();
-    expect(await send(id)).toBe(id);
-    expect(classify.classify).toHaveBeenCalledOnce();
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(await events(id)).toEqual([
-      "proposal",
-      "guard_verdict",
-      "proposal",
-      "review_approval",
-      "guard_verdict",
-      "envelope",
-    ]);
-  });
-
   it("refuses removal and reapproval with identical keys while classification is pending", async () => {
     classify.classify.mockImplementationOnce(async () => {
       await trusted.remove("alice");
-      await trusted.set("alice", peerTrust(peer));
+      await trusted.set("alice", peerTrust(alice));
       return allow;
     });
     await expect(flow.send("alice", "private coordination")).rejects.toThrow(
@@ -268,21 +293,12 @@ describe("Reef worker outbound composition", () => {
   });
 
   it("keeps the guard audit on a review-capacity refusal without recording delivery", async () => {
-    const reviews = stores.reviews;
-    await reviews.request({
-      id: "occupied",
-      from: "bob#1",
-      to: "alice#1",
-      direction: "outbound",
-      bodyHash: "a".repeat(64),
-      approvalDigest: "b".repeat(64),
-      verdict: { ...allow, decision: "review" },
-    });
+    await requestReview();
     const id = prepareReefMessageId();
     classify.classify.mockResolvedValue({ ...allow, decision: "review" });
-    await expect(
-      makeFlow(reviews).send("alice", "private coordination", { messageId: id }),
-    ).rejects.toThrow("pending review capacity");
+    await expect(flow.send("alice", "private coordination", { messageId: id })).rejects.toThrow(
+      "pending review capacity",
+    );
     expect(await events(id)).toEqual(["proposal", "guard_verdict"]);
     await expectNoDelivery(id);
   });
@@ -304,5 +320,115 @@ describe("Reef worker outbound composition", () => {
       await first;
     }
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  async function capacityFixture(
+    peers = ["alice"],
+    deliveredMaxEntries = REEF_DELIVERED_MAX_ENTRIES,
+  ) {
+    const identities = peers.map((peer) => ({ peer, identity: generateIdentity() }));
+    const entries = identities.map(({ peer, identity }, index): InboxEntry => {
+      const seq = index + 1;
+      const id = `01JZ${String(seq).padStart(22, "0")}`;
+      const envelope = seal({
+        id,
+        from: `${peer}#1`,
+        to: "bob#1",
+        body: { text: `message ${seq}` },
+        senderSigningSecretKey: identity.signing.secretKey,
+        recipientEncryptionPublicKey: keys.encryption.publicKey,
+      });
+      return { seq, peer, id, kind: "message", envelope, ts: Math.floor(Date.now() / 1_000) };
+    });
+    const capacity = flowStores(deliveredMaxEntries);
+    const trust = openReefTrustStore(capacity.runtime, cfg);
+    for (const { peer, identity } of identities) {
+      await trust.set(peer, peerTrust(identity));
+    }
+    const raw = capacity.runtime.state.openSyncKeyedStore<{ id: string }>({
+      namespace: REEF_DELIVERED_NAMESPACE,
+      maxEntries: deliveredMaxEntries,
+      overflowPolicy: "reject-new",
+      defaultTtlMs: REEF_DELIVERED_TTL_MS,
+    });
+    const relay = transport();
+    const onIngress = vi.fn(async () => {});
+    const persisted: number[] = [];
+    const pull = vi.fn<typeof fetch>(async (input) => {
+      const after = Number(parseRequestUrl(input).searchParams.get("after"));
+      const page = entries.filter((entry) => entry.seq > after);
+      return Response.json({ entries: page, cursor: page.at(-1)?.seq ?? after });
+    });
+    async function connect(runtime = capacity.runtime) {
+      const { replay, reviews, delivered } = await openStores(runtime, keys, {
+        deliveredMaxEntries,
+      });
+      const inbound = new ReefMessageFlow({
+        ...flow.options,
+        trust: openReefTrustStore(runtime, cfg),
+        transport: relay as unknown as ReefTransportClient, // SAFETY: ack-recording mock satisfies the client contract
+        guard: guard(allow),
+        audit: openReefAuditStore(runtime, new Uint8Array(32).fill(30)),
+        replay,
+        reviews,
+        delivered,
+        onIngress,
+      });
+      return new ReefInboxConnection(
+        createClient(pull),
+        async (batch) => {
+          await inbound.processEntries(batch);
+        },
+        () => {
+          throw new Error("REST-only proof: no live socket expected");
+        },
+        { initialCursor: 0, persistCursor: (cursor) => persisted.push(cursor) },
+      );
+    }
+    return { capacity, raw, relay, onIngress, persisted, entries, connect };
+  }
+
+  it.each([false, true])("recovers capacity-parked peers (restart=%s)", async (restart) => {
+    const peers = restart ? ["alice"] : ["alice", "carol"];
+    const { capacity, raw, relay, onIngress, persisted, entries, connect } = await capacityFixture(
+      peers,
+      peers.length,
+    );
+    for (const peer of peers) {
+      await capacity.delivered.confirm(peer);
+    }
+    let inbox = await connect();
+    await inbox.drain();
+    expect(onIngress).toHaveBeenCalledTimes(peers.length);
+    expect(relay.acknowledge).not.toHaveBeenCalled();
+    expect(persisted).toEqual([]);
+    for (const peer of peers) {
+      raw.delete(peer);
+    }
+    if (restart) {
+      inbox = await connect(createRuntime(capacity.stateDir));
+    }
+    await inbox.drain();
+    expect(onIngress).toHaveBeenCalledTimes(2 * peers.length);
+    expect(relay.acknowledge).toHaveBeenCalledTimes(peers.length);
+    for (const entry of entries) {
+      expect(await capacity.delivered.status(entry.id)).toBe("delivered");
+    }
+    expect(persisted.at(-1)).toBe(peers.length);
+    await inbox.drain();
+    expect(onIngress).toHaveBeenCalledTimes(2 * peers.length);
+    expect(relay.acknowledge).toHaveBeenCalledTimes(peers.length);
+  });
+
+  it("legacy stateless delivered markers suppress re-ingress and acknowledge on the next poll", async () => {
+    const { capacity, raw, relay, onIngress, persisted, entries, connect } =
+      await capacityFixture();
+    const id = entries[0]!.id;
+    raw.registerIfAbsent(id, { id });
+    await (await connect()).drain();
+    expect(onIngress).not.toHaveBeenCalled();
+    expect(relay.acknowledge).toHaveBeenCalledTimes(1);
+    expect(await capacity.delivered.status(id)).toBe("delivered");
+    expect(persisted.at(-1)).toBe(1);
   });
 });
