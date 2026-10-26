@@ -2,7 +2,6 @@
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
-import type { ApplicationContext } from "../../app/context.ts";
 import { createRouteLoaderOptions } from "../../test-helpers/route-loader-options.ts";
 import { loadChatRoute, loadSessionPage, sessionRouteTargetFromLocation } from "./route-loader.ts";
 import {
@@ -40,15 +39,14 @@ function warmRoute(scope: "per-sender" | "global" = "per-sender", mainKey = "wor
   const fixture = createSessionRouteContext();
   const { context } = fixture;
   const connectedClient = context.gateway.snapshot.client;
-  const listeners = new Set<Parameters<ApplicationContext["gateway"]["subscribe"]>[0]>();
   const waiting = createDeferred();
   context.gateway.snapshot.phase = "connecting";
   context.gateway.snapshot.client = null;
-  context.gateway.subscribe = vi.fn((listener) => {
-    listeners.add(listener);
+  const subscribe = context.gateway.subscribe.bind(context.gateway);
+  context.gateway.subscribe = (listener) => {
     waiting.resolve();
-    return () => listeners.delete(listener);
-  });
+    return subscribe(listener);
+  };
   context.agents.state.agentsList = null;
   Object.defineProperty(context.sessions, "cachedRoutingDefaults", {
     get: () => (context.gateway.snapshot.phase === "connected" ? undefined : { mainKey, scope }),
@@ -68,13 +66,12 @@ function warmRoute(scope: "per-sender" | "global" = "per-sender", mainKey = "wor
       return loadChatRoute(context, location(pathname), face, signal);
     },
     connect(this: void) {
-      context.gateway.snapshot.phase = "connected";
-      context.gateway.snapshot.client = connectedClient;
       const sessionDefaults = { defaultAgentId: "roboclaw", mainKey: "workspace", scope };
-      Object.assign(context.gateway.snapshot, { hello: { snapshot: { sessionDefaults } } });
-      for (const listener of listeners) {
-        listener(context.gateway.snapshot);
-      }
+      fixture.publishGateway({
+        phase: "connected",
+        client: connectedClient,
+        hello: { snapshot: { sessionDefaults } },
+      });
     },
     installResolver: (rows: GatewaySessionRow[]) => {
       context.gateway.snapshot.client = connectedClient;

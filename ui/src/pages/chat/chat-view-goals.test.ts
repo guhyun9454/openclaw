@@ -17,8 +17,6 @@ let container: HTMLElement;
 let onGoalAction = vi.fn<(goalId: string, action: ChatGoalAction) => void>();
 beforeEach(() => {
   installTranscriptDomMocks();
-  // Import latency must not advance the elapsed-time display under test.
-  vi.spyOn(Date, "now").mockReturnValue(Date.now());
   container = createComposerContainer();
   onGoalAction = vi.fn<(goalId: string, action: ChatGoalAction) => void>();
 });
@@ -47,9 +45,6 @@ function renderGoal(goal: Goal = {}, props: Parameters<typeof renderChat>[0] = {
     kind: "direct",
     updatedAt: 2,
     goal: createSessionGoalFixture("goal-1", objective, {
-      createdAt: Date.now() - 15_000,
-      updatedAt: 2,
-      tokenStart: 100,
       tokensUsed: 12_400,
       tokenBudget: 50_000,
       ...goal,
