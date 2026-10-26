@@ -8,6 +8,7 @@ import {
 } from "./agent-command.compaction.test-support.js";
 import type { AgentCommandIngressOpts } from "./command/types.js";
 import type { EmbeddedAgentMeta } from "./embedded-agent-runner/types.js";
+import { completionModelDefinition } from "./simple-completion.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   emitTrustedDiagnosticEvent: vi.fn(),
@@ -39,16 +40,13 @@ beforeEach(() => {
       openai: {
         baseUrl: "https://api.openai.com/v1",
         models: [
-          {
+          completionModelDefinition({
             id: "gpt-5.5",
-            name: "Test model",
-            reasoning: false,
-            input: ["text"],
             cost: { input: 1, output: 2.5, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 128000,
             maxTokens: 8192,
             agentRuntime: { id: "openclaw" },
-          },
+          }),
         ],
       },
     },
@@ -64,23 +62,16 @@ async function runIngress(
     text: "Test answer",
     runner: "embedded",
   });
-  state.runAgentAttemptMock.mockResolvedValueOnce({
-    ...result,
-    meta: {
-      ...result.meta,
-      durationMs: 1234,
-      agentMeta: {
-        provider: "openai",
-        model: "gpt-5.5",
-        sessionId: "sess-abc",
-        usage: { input: 500, output: 200, cacheRead: 50, cacheWrite: 25, total: 775 },
-        contextTokens: 128000,
-        promptTokens: 1200,
-        lastCallUsage: { input: 500, output: 200 },
-        ...agentMeta,
-      },
-    },
-  });
+  result.meta.durationMs = 1234;
+  result.meta.agentMeta = {
+    ...result.meta.agentMeta,
+    usage: { input: 500, output: 200, cacheRead: 50, cacheWrite: 25, total: 775 },
+    contextTokens: 128000,
+    promptTokens: 1200,
+    lastCallUsage: { input: 500, output: 200 },
+    ...agentMeta,
+  };
+  state.runAgentAttemptMock.mockResolvedValueOnce(result);
   await agentCommandFromGatewayIngress(
     {
       message: "hello",
@@ -99,30 +90,32 @@ async function runIngress(
     .filter((event) => event.type === "model.usage");
 }
 
+function expectEvent(events: unknown[], expected: object) {
+  expect(events).toEqual([expect.objectContaining(expected)]);
+}
+
 describe("agent command ingress usage diagnostics", () => {
   it("emits turn usage with the current run channel", async () => {
     const events = await runIngress({}, { runContext: { messageChannel: "discord" } });
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "model.usage",
-        sessionKey: "agent:main:main",
-        sessionId: "sess-abc",
-        channel: "discord",
-        agentId: "main",
-        provider: "openai",
-        model: "gpt-5.5",
-        usage: {
-          input: 500,
-          output: 200,
-          cacheRead: 50,
-          cacheWrite: 25,
-          promptTokens: 575,
-          total: 775,
-        },
-        durationMs: 1234,
-        costUsd: 0.001,
-      }),
-    ]);
+    expectEvent(events, {
+      type: "model.usage",
+      sessionKey: "agent:main:main",
+      sessionId: "sess-abc",
+      channel: "discord",
+      agentId: "main",
+      provider: "openai",
+      model: "gpt-5.5",
+      usage: {
+        input: 500,
+        output: 200,
+        cacheRead: 50,
+        cacheWrite: 25,
+        promptTokens: 575,
+        total: 775,
+      },
+      durationMs: 1234,
+      costUsd: 0.001,
+    });
   });
 
   it("uses cumulative billing usage while retaining last-call context", async () => {
@@ -130,22 +123,20 @@ describe("agent command ingress usage diagnostics", () => {
       { diagnosticUsage: { input: 900, output: 300, cacheRead: 70, cacheWrite: 30, total: 1300 } },
       { messageChannel: undefined, channel: "webchat" },
     );
-    expect(events).toEqual([
-      expect.objectContaining({
-        channel: "webchat",
-        usage: {
-          input: 900,
-          output: 300,
-          cacheRead: 70,
-          cacheWrite: 30,
-          promptTokens: 1000,
-          total: 1300,
-        },
-        lastCallUsage: { input: 500, output: 200 },
-        context: { limit: 128000, used: 1200 },
-        costUsd: 0.00165,
-      }),
-    ]);
+    expectEvent(events, {
+      channel: "webchat",
+      usage: {
+        input: 900,
+        output: 300,
+        cacheRead: 70,
+        cacheWrite: 30,
+        promptTokens: 1000,
+        total: 1300,
+      },
+      lastCallUsage: { input: 500, output: 200 },
+      context: { limit: 128000, used: 1200 },
+      costUsd: 0.00165,
+    });
   });
 
   it("does not emit when diagnostics are disabled", async () => {
@@ -162,13 +153,11 @@ describe("agent command ingress usage diagnostics", () => {
       { usage: { cost: { total: 0 } }, promptTokens: undefined, lastCallUsage: undefined },
       { messageChannel: undefined },
     );
-    expect(events).toEqual([
-      expect.objectContaining({
-        channel: "http",
-        costUsd: 0,
-        context: { limit: 128000 },
-        usage: expect.objectContaining({ cacheRead: 0, cacheWrite: 0, total: 0 }),
-      }),
-    ]);
+    expectEvent(events, {
+      channel: "http",
+      costUsd: 0,
+      context: { limit: 128000 },
+      usage: expect.objectContaining({ cacheRead: 0, cacheWrite: 0, total: 0 }),
+    });
   });
 });
