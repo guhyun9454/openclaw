@@ -20,49 +20,42 @@ import {
 } from "./chat-history-fixture.test-support.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
 
-it("keeps an empty history available across unrelated catalog publication", async () => {
-  await withHistoryState(async () => {
-    setRuntimeConfigSnapshot({});
-    const context = await createHistoryReadContext();
-    const prepare = sharingPreparation.prepareSessionMutationFacts;
-    const probe = vi
-      .spyOn(sharingPreparation, "prepareSessionMutationFacts")
-      .mockImplementation(async (params) => {
-        try {
+it.each(["catalog publication", "session creation"] as const)(
+  "checks an absent history's identity across %s during preparation",
+  async (change) => {
+    await withHistoryState(async () => {
+      setRuntimeConfigSnapshot({});
+      const context = await createHistoryReadContext();
+      const scope = { agentId: "main", sessionKey: "agent:main:created-mid-read" };
+      const prepare = sharingPreparation.prepareSessionMutationFacts;
+      const probe = vi.spyOn(sharingPreparation, "prepareSessionMutationFacts");
+      if (change === "session creation") {
+        probe.mockImplementationOnce(async (params) => {
+          await upsertSessionEntryCore(scope, { sessionId: "created-mid-read", updatedAt: 1 });
           return await prepare(params);
-        } finally {
-          sessionChanges.emit({ all: true, scope: "catalog" });
+        });
+      } else {
+        probe.mockImplementation(async (params) => {
+          try {
+            return await prepare(params);
+          } finally {
+            sessionChanges.emit({ all: true, scope: "catalog" });
+          }
+        });
+      }
+      try {
+        const respond = await historyRpc(context, scope.sessionKey)("chat.history");
+        if (change === "session creation") {
+          expectHistoryError(respond, { code: "UNAVAILABLE", retryable: true });
+        } else {
+          expectHistoryPayload(respond, { messages: [], sessionId: undefined });
         }
-      });
-    try {
-      const respond = await historyRpc(context, "agent:main:empty")("chat.history");
-      expectHistoryPayload(respond, { messages: [], sessionId: undefined });
-    } finally {
-      probe.mockRestore();
-    }
-  });
-});
-
-it("asks for a reload when an absent session is created during the read", async () => {
-  await withHistoryState(async () => {
-    setRuntimeConfigSnapshot({});
-    const context = await createHistoryReadContext();
-    const scope = { agentId: "main", sessionKey: "agent:main:created-mid-read" };
-    const prepare = sharingPreparation.prepareSessionMutationFacts;
-    const probe = vi
-      .spyOn(sharingPreparation, "prepareSessionMutationFacts")
-      .mockImplementationOnce(async (params) => {
-        await upsertSessionEntryCore(scope, { sessionId: "created-mid-read", updatedAt: 1 });
-        return await prepare(params);
-      });
-    try {
-      const respond = await historyRpc(context, scope.sessionKey)("chat.history");
-      expectHistoryError(respond, { code: "UNAVAILABLE", retryable: true });
-    } finally {
-      probe.mockRestore();
-    }
-  });
-});
+      } finally {
+        probe.mockRestore();
+      }
+    });
+  },
+);
 
 it.each(["global", "per-sender"] as const)(
   "reads the selected agent's %s main alias before a competing literal row",

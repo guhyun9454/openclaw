@@ -125,47 +125,38 @@ it("exposes native observations only on an authorized explicit parent read", () 
     expect(f.observe).not.toHaveBeenCalled();
   }));
 
-it.each(["session", "harness"])(
+it.each(["session", "harness", "sharing"] as const)(
   "discards observations when the %s changes during the read",
   (change) =>
-    withFixture(async (f) => {
-      const release = createDeferredCore();
-      f.observe.mockImplementation(async () => {
-        await release.promise;
-        return snapshot;
-      });
-      const pending = f.describe();
-      try {
-        await vi.waitFor(() => expect(f.observe).toHaveBeenCalledOnce());
-        if (change === "session") {
-          await f.replace();
-        } else {
-          setActivePluginRegistry(createEmptyPluginRegistry());
+    withFixture(
+      async (f) => {
+        const release = createDeferredCore();
+        f.observe.mockImplementation(async () => {
+          await release.promise;
+          return snapshot;
+        });
+        const pending = f.describe(true, change === "sharing");
+        try {
+          await vi.waitFor(() => expect(f.observe).toHaveBeenCalledOnce());
+          if (change === "session") {
+            await f.replace();
+          } else if (change === "sharing") {
+            await f.hide();
+          } else {
+            setActivePluginRegistry(createEmptyPluginRegistry());
+          }
+        } finally {
+          release.resolve();
         }
-      } finally {
-        release.resolve();
-      }
-      const result = await pending;
-      expect(result[0]).toBe(false);
-      expect(result[1]).toBeUndefined();
-    }),
+        const result = await pending;
+        if (change === "sharing") {
+          expect(result[1] ?? {}).not.toHaveProperty("nativeSubagents");
+          expect(JSON.stringify(result)).not.toContain("/root/audit");
+        } else {
+          expect(result[0]).toBe(false);
+          expect(result[1]).toBeUndefined();
+        }
+      },
+      change === "sharing" ? "view" : "none",
+    ),
 );
-
-it("withdraws native observations when parent sharing is revoked during the read", () =>
-  withFixture(async (f) => {
-    const release = createDeferredCore();
-    f.observe.mockImplementation(async () => {
-      await release.promise;
-      return snapshot;
-    });
-    const pending = f.describe(true, true);
-    try {
-      await vi.waitFor(() => expect(f.observe).toHaveBeenCalledOnce());
-      await f.hide();
-    } finally {
-      release.resolve();
-    }
-    const result = await pending;
-    expect(result[1] ?? {}).not.toHaveProperty("nativeSubagents");
-    expect(JSON.stringify(result)).not.toContain("/root/audit");
-  }, "view"));

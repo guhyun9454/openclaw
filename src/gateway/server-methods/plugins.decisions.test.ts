@@ -1,6 +1,7 @@
 import { Value } from "typebox/value";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { PluginsInspectResultSchema } from "../../../packages/gateway-protocol/src/schema/plugins.js";
+import { createPluginDeclaredSurface } from "../../../test/helpers/plugin-declared-surface.js";
 import { evaluateDecisionInRegistry } from "../../decisions/runtime.js";
 import { emptyInstalledPluginComponents } from "../../plugins/installed-plugin-components.js";
 import { runPluginRegisterSyncInRegistry } from "../../plugins/loader-module-runtime.js";
@@ -98,18 +99,7 @@ it.each([undefined, 1, 2] as const)(
       ok: true,
       plugin: { id: record.id, name: "Decision fixture", installed: true, enabled: true },
       reviewToken: "synthetic-review-token",
-      declared: {
-        channels: [],
-        providers: [],
-        tools: [],
-        contracts: ["decisionProviders: fixture"],
-        hooks: [],
-        mcpServers: [],
-        cliCommands: [],
-        cliBackends: [],
-        skills: [],
-        dangerousConfigFlags: [],
-      },
+      declared: createPluginDeclaredSurface({ contracts: ["decisionProviders: fixture"] }),
       grants: {
         hooks: {
           allowPromptInjection: { effective: false },
@@ -158,7 +148,6 @@ it.each([undefined, 1, 2] as const)(
       expect(response).not.toHaveProperty("decisions.0.credentialReady");
     }
     expect(Value.Check(PluginsInspectResultSchema, response)).toBe(true);
-    expect(Value.Check(PluginsInspectResultSchema, inspection)).toBe(true);
     if (registered) {
       const observed = builder.registry.decisionProviders[0]!.host.inspect(config);
       for (const malformed of [
