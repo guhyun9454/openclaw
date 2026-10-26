@@ -19,7 +19,9 @@ describe("memory session delta publication", () => {
   const { createConfig, getFreshManager, seedSessionTranscript } = fixture;
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    onTestFinished(() => vi.useRealTimers());
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
   });
   async function openManager(cacheEnabled?: boolean) {
     const manager = await getFreshManager(

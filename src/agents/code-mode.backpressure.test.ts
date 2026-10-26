@@ -1,8 +1,9 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { controlledTool } from "./code-mode.controlled-tool.test-support.js";
-import { runCodeModeScriptHeadless } from "./code-mode.js";
+import { applyCodeModeCatalog, runCodeModeScriptHeadless } from "./code-mode.js";
 import {
+  createCodeModeHarness,
   createCatalogCodeModeHarness,
   createHeadlessCodeModeHarness,
   expectCompleted,
@@ -20,10 +21,13 @@ function makeProbe(execute: AnyAgentTool["execute"] = async (_id, input) => json
 }
 
 function harness(headless: boolean, limit: number, tool: AnyAgentTool) {
-  const { tools } = createCatalogCodeModeHarness([tool], {
-    codeMode: { maxPendingToolCalls: limit },
-  });
-  return async (code: string, signal?: AbortSignal, maxToolCalls = 200) =>
+  const { ctx, tools } = createCodeModeHarness({ codeMode: { maxPendingToolCalls: limit } });
+  applyCodeModeCatalog({ ...ctx, tools: [...tools, tool] });
+  return async (
+    code: string,
+    signal?: AbortSignal,
+    maxToolCalls = 200,
+  ): Promise<Record<string, unknown>> =>
     headless
       ? await runCodeModeScriptHeadless({
           ctx: createHeadlessCodeModeHarness([tool], { codeMode: { maxPendingToolCalls: limit } }),
@@ -31,7 +35,9 @@ function harness(headless: boolean, limit: number, tool: AnyAgentTool) {
           maxToolCalls,
           signal,
         })
-      : resultDetails(await tools[0]!.execute("backpressure-exec", { code }, signal));
+      : resultDetails(
+          await expectDefined(tools[0], "exec tool").execute("backpressure-exec", { code }, signal),
+        );
 }
 
 afterEach(async () => {
@@ -113,8 +119,14 @@ it("cancels queued timers without admitting them and drains live timer callbacks
 });
 
 it.each([false, true])("drops queued calls on abort (headless=%s)", async (headless) => {
-  const { tool, started, release } = controlledTool(makeProbe(async () => jsonResult({})));
+  const started = createDeferred<AbortSignal | undefined>();
+  const release = createDeferred();
   const controller = new AbortController();
+  const tool = makeProbe(async (_id, _input, signal) => {
+    started.resolve(signal);
+    await release.promise;
+    return jsonResult({});
+  });
   const run = harness(headless, 1, tool);
   const execution = run(
     "return await Promise.all(Array.from({ length: 20 }, (_, i) => probe({ value: String(i) })));",

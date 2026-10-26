@@ -9,7 +9,6 @@ import {
 } from "./test-helpers/agent-message-fixtures.js";
 
 const text = (value: string) => ({ type: "text" as const, text: value });
-const user = (content: unknown) => ({ role: "user", content, timestamp: 0 });
 const call = (id: string) => ({ type: "toolCall" as const, id, name: "read", arguments: {} });
 const assistant = (
   content: AssistantMessage["content"],
@@ -22,12 +21,9 @@ const thinking = (value: string, signature?: string) => ({
   ...(signature ? { thought_signature: signature } : {}),
 });
 type Options = Parameters<typeof sanitizeSessionMessagesImages>[2];
-const sanitize = (input: unknown[], options?: Options, label = "test") =>
-  sanitizeSessionMessagesImages(castAgentMessages(input), label, options);
-const contentOf = async (message: unknown, options?: Options) =>
-  (await sanitize([message], options))[0]?.content;
 async function check(input: unknown[], expected: unknown[], options?: Options) {
-  expect(await sanitize(input, options)).toEqual(expected);
+  const actual = await sanitizeSessionMessagesImages(castAgentMessages(input), "test", options);
+  expect(actual).toEqual(expected);
 }
 
 it("reuses owned text cleanup across rebuilt envelopes without mixing replay policies", async () => {
@@ -37,23 +33,33 @@ it("reuses owned text cleanup across rebuilt envelopes without mixing replay pol
   ];
   const message = assistant(content);
   normalizeTranscriptJsonValue({ message }, "entry");
-  const rebuiltContent = (options?: Options) => contentOf({ ...message }, options);
+  const sanitize = async (options?: Options) =>
+    (await sanitizeSessionMessagesImages([{ ...message }], "test", options)).find(
+      (entry) => entry.role === "assistant",
+    )?.content;
   const strict = { sanitizeThoughtSignatures: { allowBase64Only: true, includeCamelCase: true } };
-  const first = await rebuiltContent(strict);
+  const first = await sanitize(strict);
   expect(first).toEqual([{ ...text(" "), textSignature: "signed" }, text("visible")]);
-  expect(await rebuiltContent({ preserveSignatures: true })).toBe(content);
-  expect(await rebuiltContent(strict)).toBe(first);
+  expect(await sanitize({ preserveSignatures: true })).toBe(content);
+  expect(await sanitize(strict)).toBe(first);
   expect(Object.isFrozen(first)).toBe(true);
-  expect(await contentOf(user(content))).toEqual([content[1]]);
-  expect(await rebuiltContent(strict)).toBe(first);
+  const user = { role: "user" as const, content, timestamp: 0 };
+  expect((await sanitizeSessionMessagesImages([user], "test"))[0]).toHaveProperty("content", [
+    content[1],
+  ]);
+  expect(await sanitize(strict)).toBe(first);
 });
 
 it("sanitizes mutable content again after an in-place edit", async () => {
   const block = text("first");
-  const message = user([block]);
-  expect(await contentOf(message)).toEqual([text("first")]);
+  const message = { role: "user" as const, content: [block], timestamp: 0 };
+  expect((await sanitizeSessionMessagesImages([message], "test"))[0]).toHaveProperty("content", [
+    text("first"),
+  ]);
   block.text = " ";
-  expect(await contentOf(message)).toEqual([text("[empty content omitted]")]);
+  expect((await sanitizeSessionMessagesImages([message], "test"))[0]).toHaveProperty("content", [
+    text("[empty content omitted]"),
+  ]);
 });
 const replay = {
   v: 1,
@@ -88,13 +94,13 @@ it.each([true, false])("repairs an empty-text checkpoint (tool=%s)", async (hasT
 });
 
 it("drops empty assistant turns while preserving the user turn", async () => {
-  const message = user("hello");
-  await check([message, assistant([text(" ")]), assistant([], { stopReason: "error" })], [message]);
+  const user = { role: "user" as const, content: "hello", timestamp: 0 };
+  await check([user, assistant([text(" ")]), assistant([], { stopReason: "error" })], [user]);
 });
 
 it("keeps user and tool-result content nonempty", async () => {
   const input = castAgentMessages([
-    user([text(""), text("")]),
+    { role: "user", content: [text(""), text("")] },
     { role: "toolResult", toolCallId: "tool-1", content: [text("   "), text("")] },
   ]);
   await check(input, [
@@ -131,7 +137,11 @@ it("keeps corrupt history images omitted after error and a recovered reply", asy
     text: expect.stringMatching(/^\[session:history\] omitted image payload: .*decode/i),
   };
   const stored = castAgentMessages([
-    user([text("inspect these"), image(truncated), image(valid)]),
+    {
+      role: "user",
+      content: [text("inspect these"), image(truncated), image(valid)],
+      timestamp: 1,
+    },
     assistant([call("t1")], { stopReason: "toolUse" }),
     {
       role: "toolResult",
@@ -153,11 +163,11 @@ it("keeps corrupt history images omitted after error and a recovered reply", asy
     { ...stored[2], content: [text("permission denied"), omitted] },
     stored[3],
   ]);
-  expect(await sanitize(stored, undefined, "session:history")).toEqual(expected);
+  expect(await sanitizeSessionMessagesImages(stored, "session:history")).toEqual(expected);
   expect(stored).toEqual(original);
 
   const recovered = assistant([text("recovered")]);
-  expect(await sanitize([...stored, recovered], undefined, "session:history")).toEqual([
+  expect(await sanitizeSessionMessagesImages([...stored, recovered], "session:history")).toEqual([
     ...expected,
     recovered,
   ]);

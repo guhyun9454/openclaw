@@ -151,10 +151,10 @@ describe("tool image sanitizing", () => {
   });
 
   it.each([
-    ["invalid base64", () => 'AA==" onerror="alert(1)'],
+    ["invalid base64", (): string => 'AA==" onerror="alert(1)'],
     [
       "image exceeds input size limit (10.00MB)",
-      () => "A".repeat(Math.ceil((10 * 1024 * 1024 + 1) / 3) * 4),
+      (): string => "A".repeat(Math.ceil((10 * 1024 * 1024 + 1) / 3) * 4),
     ],
   ] as const)("rejects unsafe input: %s", async (reason, payload) => {
     expect(await sanitize(payload())).toStrictEqual(omitted(reason));

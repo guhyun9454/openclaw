@@ -94,7 +94,7 @@ it.each([
   ["null", false],
   ["[]", false],
   ["{", false],
-] as const)("detects self-message transcripts: %j", (args, shouldFind, type) => {
+] as const)("detects self-message transcripts: %j", (args, shouldFind, type?: "tool_use") => {
   expect(directReply(args, type)).toMatchObject(
     shouldFind
       ? [{ kind: "direct-reply-self-message", verdict: "product-bug", owner: "openclaw-routing" }]
