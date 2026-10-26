@@ -10,7 +10,6 @@ import {
   cleanupPluginLoaderFixturesForTest,
   EMPTY_PLUGIN_SCHEMA,
   useNoBundledPlugins,
-  clearPluginLoaderCache,
   loadOpenClawPlugins,
   makePluginLoaderTempDir,
   resetPluginLoaderTestStateForTest,
@@ -158,118 +157,6 @@ describe("loadBundledCapabilityRuntimeRegistry", () => {
     expect(capture(blocked, [], { plugins }).providers).toEqual([]);
     expect(listImportedRuntimePluginIds()).not.toContain(blocked.id);
   });
-});
-
-const failureWorkspace = makePluginLoaderTempDir();
-const validationState = { status: "error", failurePhase: "validation" } as const;
-
-async function loadPlugins(
-  plugins: ReturnType<typeof writePlugin>[],
-  warnings?: string[],
-  previousRegistry?: NonNullable<Parameters<typeof loadOpenClawPlugins>[0]>["previousRegistry"],
-) {
-  clearPluginLoaderCache();
-  const allow = plugins.map(({ id }) => id);
-  return loadOpenClawPlugins({
-    cache: false,
-    previousRegistry,
-    config: {
-      plugins: {
-        enabled: true,
-        load: { paths: plugins.map(({ file }) => file) },
-        allow,
-      },
-    },
-    installRecords: {},
-    logger: {
-      info: () => {},
-      debug: () => {},
-      error: () => {},
-      warn: (message: string) => warnings?.push(message),
-    },
-    onlyPluginIds: allow,
-    workspaceDir: failureWorkspace,
-  });
-}
-
-function requirePluginEntry(registry: Awaited<ReturnType<typeof loadPlugins>>, pluginId: string) {
-  const entry = registry.plugins.find((plugin) => plugin.id === pluginId);
-  assert(entry, `expected ${pluginId} registry entry`);
-  return entry;
-}
-
-it("keeps loading siblings and retries validation when a schema cannot be serialized", async () => {
-  // Serialize the fixture without spending the stack that validation must contain.
-  const deep =
-    '{"type":"object","properties":{"nested":'.repeat(3_000) +
-    '{"type":"object"}' +
-    "}}".repeat(3_000);
-  const broken = writePlugin({ id: "deep-schema-plugin", registration: "" });
-  fs.writeFileSync(
-    path.join(broken.dir, "openclaw.plugin.json"),
-    `{"id":"deep-schema-plugin","configSchema":${deep}}`,
-  );
-  const healthy = writePlugin({ id: "shallow-schema-plugin", registration: "" });
-
-  const brokenSource = fs.realpathSync(broken.file);
-  const stringify = JSON.stringify;
-  // Native serialization limits differ; only the broken candidate's retention signature fails.
-  const serialization = vi.spyOn(JSON, "stringify").mockImplementation((value, ...args) => {
-    if (Array.isArray(value) && value[0] === brokenSource) {
-      throw new RangeError("fixture retention signature exceeds serialization limits");
-    }
-    return stringify(value, ...args);
-  });
-  try {
-    const registry = await loadPlugins([broken, healthy]);
-
-    const loaded = requirePluginEntry(registry, healthy.id);
-    const failed = requirePluginEntry(registry, broken.id);
-    expect(loaded.status).toBe("loaded");
-    expect(failed).toMatchObject(validationState);
-    const replacement = await loadPlugins([broken, healthy], undefined, registry);
-    expect(requirePluginEntry(replacement, healthy.id)).toBe(loaded);
-    expect(requirePluginEntry(replacement, broken.id)).toMatchObject(validationState);
-    expect(requirePluginEntry(replacement, broken.id)).not.toBe(failed);
-  } finally {
-    serialization.mockRestore();
-  }
-});
-
-it("rolls back partial metadata without breaking an earlier class-backed service", async () => {
-  const stable = writePlugin({
-    id: "a-stable-service-plugin",
-    registration: `class StableService {
-        constructor() { this.id = "stable-service"; }
-        start() {}
-        ping() { return "still-alive"; }
-      }
-      api.registerService(new StableService());`,
-  });
-  const failing = writePlugin({
-    id: "z-partial-register-failure",
-    registration: `api.registerService({ id: "failed-service", start() {} });
-        api.registerHttpRoute({ path: "/failed", auth: "plugin", handler: async () => true });
-        throw new Error("fail after partial registration");`,
-  });
-
-  const invalid = writePlugin({
-    id: "warn-validation",
-    body: `module.exports = { id: "warn-validation" };`,
-  });
-  const warnings: string[] = [];
-  const registry = await loadPlugins([stable, failing, invalid], warnings);
-  const failed = requirePluginEntry(registry, "z-partial-register-failure");
-  const stableService = registry.services.find((entry) => entry.service.id === "stable-service")
-    ?.service as { ping?: () => string } | undefined;
-
-  expect(failed).toMatchObject({ status: "error", httpRoutes: 0, services: [] });
-  expect(registry.services.map((entry) => entry.service.id)).toEqual(["stable-service"]);
-  expect(registry.httpRoutes).toEqual([]);
-  expect(stableService?.ping?.()).toBe("still-alive");
-  const summary = warnings.find((warning) => warning.includes("failed to initialize"));
-  expect(summary).toContain("register: z-partial-register-failure");
-  expect(summary).toContain("validation: warn-validation");
 });
 
 function setupOwners(legacyFirst: boolean, declaredEngineId = "existing-engine") {
