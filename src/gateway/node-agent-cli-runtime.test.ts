@@ -81,15 +81,12 @@ describe("invokeNodeClaudeCliRun", () => {
     };
     await expect(invoke(credentials)).resolves.toEqual({ ok: true });
     expect(mocks.resolveNodeCommandAllowlist).toHaveBeenCalledOnce();
-    expect(mocks.invoke.mock.calls).toMatchObject([
-      [
-        {
-          expectedConnId: "conn-1",
-          expectedPairingGeneration: "generation-1",
-          params: credentials,
-        },
-      ],
-    ]);
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke.mock.calls[0]?.[0]).toMatchObject({
+      expectedConnId: "conn-1",
+      expectedPairingGeneration: "generation-1",
+      params: credentials,
+    });
   });
 
   it.each([false, true])(

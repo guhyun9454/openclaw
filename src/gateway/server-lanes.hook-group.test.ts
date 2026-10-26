@@ -1,13 +1,3 @@
-/**
- * The cron+hook capacity group is opt-in on `hooks.enabled`.
- *
- * The reservation is a real cost: it withholds a slot from cron inner work even
- * while the hook lane is idle. That price buys the guarantee that hooks cannot
- * be starved by a saturated cron budget — so it is only paid by deployments
- * that actually run hooks. With hooks disabled no group is installed and
- * `cron-nested` keeps the entire cron budget, unchanged from before this
- * feature existed.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as gate } from "../../test/helpers/promise.js";
 import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../config/cron-limits.js";
@@ -25,6 +15,23 @@ const HOOKS_ON = {
   hooks: { enabled: true, token: "t" },
 } as unknown as OpenClawConfig;
 const HOOKS_OFF = {} as OpenClawConfig;
+const cronSnapshot = () => getCommandLaneSnapshot(CommandLane.CronNested);
+const hookSnapshot = () => getCommandLaneSnapshot(CommandLane.HookDispatch);
+
+function fillCron() {
+  const gates = Array.from({ length: DEFAULT_CRON_MAX_CONCURRENT_RUNS }, () => gate());
+  const runs = gates.map((g) =>
+    enqueueCommandInLane(CommandLane.CronNested, async () => await g.promise, {
+      warnAfterMs: 10_000,
+    }),
+  );
+  return async () => {
+    for (const g of gates) {
+      g.resolve();
+    }
+    await Promise.all(runs);
+  };
+}
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i++) {
@@ -48,44 +55,24 @@ describe("cron+hook capacity group", () => {
   });
 
   it("hooks-off immediately drains cron work released by the teardown", async () => {
-    // Teardown must WAKE the lanes it frees, not merely delete membership.
-    // Asserting only `group === undefined` on an idle lane would pass even if
-    // clearGroups forgot to add its former members to the commit-drain set,
-    // leaving released work stuck until some unrelated enqueue pokes the lane.
+    // Teardown must wake released work without another enqueue.
     publish(HOOKS_ON);
-
-    const gates = Array.from({ length: DEFAULT_CRON_MAX_CONCURRENT_RUNS }, () => gate());
-    const runs = gates.map((g) =>
-      enqueueCommandInLane(CommandLane.CronNested, async () => await g.promise, {
-        warnAfterMs: 10_000,
-      }),
-    );
+    const finishCron = fillCron();
     await settle();
-
-    // One short of the budget, with the last entry queued behind the hook's
-    // reservation rather than running.
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).activeCount).toBe(
-      DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1,
-    );
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).queuedCount).toBe(1);
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).blockedBy).toBe("sibling-reservation");
-
-    // Turning hooks off returns the reserved slot to cron. The queued entry
-    // must start on the publish itself.
+    expect(cronSnapshot()).toMatchObject({
+      activeCount: DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1,
+      queuedCount: 1,
+      blockedBy: "sibling-reservation",
+    });
     publish(HOOKS_OFF);
     await settle();
-
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).group).toBeUndefined();
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).activeCount).toBe(
-      DEFAULT_CRON_MAX_CONCURRENT_RUNS,
-    );
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).queuedCount).toBe(0);
-
-    for (const g of gates) {
-      g.resolve();
-    }
-    await Promise.all(runs);
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).blockedBy).toBeNull();
+    expect(cronSnapshot().group).toBeUndefined();
+    expect(cronSnapshot()).toMatchObject({
+      activeCount: DEFAULT_CRON_MAX_CONCURRENT_RUNS,
+      queuedCount: 0,
+    });
+    await finishCron();
+    expect(cronSnapshot().blockedBy).toBeNull();
   });
 
   it("keeps in-flight hooks inside the aggregate budget while disabling hooks", async () => {
@@ -97,33 +84,23 @@ describe("cron+hook capacity group", () => {
       async () => await hookGate.promise,
       { warnAfterMs: 10_000 },
     );
-    const cronGates = Array.from({ length: DEFAULT_CRON_MAX_CONCURRENT_RUNS }, () => gate());
-    const cronRuns = cronGates.map((g) =>
-      enqueueCommandInLane(CommandLane.CronNested, async () => await g.promise, {
-        warnAfterMs: 10_000,
-      }),
-    );
+    const finishCron = fillCron();
     await settle();
 
-    expect(getCommandLaneSnapshot(CommandLane.CronNested).activeCount).toBe(
-      DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1,
-    );
-    expect(getCommandLaneSnapshot(CommandLane.HookDispatch).groupActive).toBe(
-      DEFAULT_CRON_MAX_CONCURRENT_RUNS,
-    );
+    expect(cronSnapshot().activeCount).toBe(DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1);
+    expect(hookSnapshot().groupActive).toBe(DEFAULT_CRON_MAX_CONCURRENT_RUNS);
 
     publish(HOOKS_OFF);
     await settle();
 
-    // The lane closes before the group reservation is removed. The running hook
-    // remains grouped, so cron cannot expand beyond the original aggregate cap.
-    expect(getCommandLaneSnapshot(CommandLane.HookDispatch)).toMatchObject({
+    // Running hooks retain the aggregate cap after their lane closes.
+    expect(hookSnapshot()).toMatchObject({
       maxConcurrent: 0,
       group: "cron-hooks",
       reservedForLane: 0,
       activeCount: 1,
     });
-    expect(getCommandLaneSnapshot(CommandLane.CronNested)).toMatchObject({
+    expect(cronSnapshot()).toMatchObject({
       activeCount: DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1,
       queuedCount: 1,
       groupActive: DEFAULT_CRON_MAX_CONCURRENT_RUNS,
@@ -135,25 +112,21 @@ describe("cron+hook capacity group", () => {
     });
     await settle();
     expect(lateHookStarted).toBe(false);
-    expect(getCommandLaneSnapshot(CommandLane.HookDispatch).queuedCount).toBe(1);
+    expect(hookSnapshot().queuedCount).toBe(1);
 
     hookGate.resolve();
     await hookRun;
     await settle();
 
-    // Hook completion hands its slot to cron, not to work queued on the closed
-    // hook lane, and aggregate activity remains bounded by the same group.
-    expect(getCommandLaneSnapshot(CommandLane.CronNested)).toMatchObject({
+    // The released slot belongs to cron, not the closed hook lane.
+    expect(cronSnapshot()).toMatchObject({
       activeCount: DEFAULT_CRON_MAX_CONCURRENT_RUNS,
       queuedCount: 0,
       groupActive: DEFAULT_CRON_MAX_CONCURRENT_RUNS,
     });
     expect(lateHookStarted).toBe(false);
 
-    for (const g of cronGates) {
-      g.resolve();
-    }
-    await Promise.all(cronRuns);
+    await finishCron();
 
     publish(HOOKS_ON);
     await lateHook;
