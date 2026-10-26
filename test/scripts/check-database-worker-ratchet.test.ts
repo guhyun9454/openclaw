@@ -22,6 +22,11 @@ it.each([
     "prepareSessionColdArchiveInWorker",
     "withOpenClawAgentDatabaseReadOnly",
   ],
+  [
+    "session-cold-storage-prepare.ts",
+    "prepareSessionColdBatchInWorker",
+    "withOpenClawAgentDatabaseReadOnly",
+  ],
 ])(
   "proves the cold-storage kernel %s:%s only through reviewed entries",
   (file, operation, primitive) => {
@@ -31,7 +36,7 @@ it.each([
       [
         "src/config/sessions/session-cold-storage-worker.ts",
         `import { ${operation} } from './${file.replace(/\.ts$/, ".js")}';
-       export function prepareSessionColdBatchInWorker() { return ${operation}(); }`,
+       export function dispatchColdPreparation() { return ${operation}(); }`,
       ],
     ]);
     const tiers = () => inventory(process.cwd(), "", false, sources).map(({ tier }) => tier);

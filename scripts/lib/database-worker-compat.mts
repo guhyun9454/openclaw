@@ -186,7 +186,14 @@ const nonRuntimeCandidates = new Map<string, readonly string[]>([
     "src/config/sessions/session-cold-storage-chunks.ts",
     ["readSessionColdChunks", "iterateSessionColdRecords"],
   ],
-  ["src/config/sessions/session-cold-storage-prepare.ts", ["prepareSessionColdArchiveInWorker"]],
+  [
+    "src/config/sessions/session-cold-storage-prepare.ts",
+    [
+      "prepareSessionColdArchiveInWorker",
+      "prepareSessionColdBatchInWorker",
+      "prepareExternalization",
+    ],
+  ],
   ["src/state/openclaw-state-db-maintenance.ts", ["writeCurrentStateSchemaMetadata"]],
   ["src/state/user-profile-mutation.ts", ["runUserProfileWriteTransaction"]],
   ["src/gateway/channel-operator-authority.ts", ["resolveChannelOperatorIdentityFacts"]],
