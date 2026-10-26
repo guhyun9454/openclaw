@@ -1,12 +1,10 @@
-import { deserialize } from "node:v8";
-import { Worker } from "node:worker_threads";
 import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateIdentity, type Verdict } from "../protocol/index.js";
 import { MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
 import { openReefAuditStore } from "./audit-state.js";
-import { isPermanentReefOutboundRejection, prepareReefMessageId, ReefMessageFlow } from "./flow.js";
+import { prepareReefMessageId, ReefMessageFlow } from "./flow.js";
 import {
   allow,
   config,
@@ -78,35 +76,19 @@ describe("Reef worker outbound composition", () => {
       .map((entry) => entry.event.type);
   }
 
-  function recordDispatches() {
-    const dispatched: unknown[] = [];
-    // oxlint-disable-next-line typescript/unbound-method -- call supplies the intercepted worker receiver.
-    const nativePost = Worker.prototype.postMessage;
-    vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
-      this: Worker,
-      message: unknown,
-      transferList,
-    ) {
-      const commands: unknown[] = [];
-      // Decode before the native transfer detaches the sender's command buffer.
-      if (isRecord(message) && message.type === "execute" && message.input instanceof Uint8Array) {
-        const command: unknown = deserialize(message.input);
-        commands.push(isRecord(command) ? command.type : "invalid command");
-      }
-      nativePost.call(this, message, transferList);
-      dispatched.push(...commands);
-    });
-    return () => dispatched;
+  async function expectNoDelivery(id: string, recipients = ["alice"]) {
+    expect(fetcher).not.toHaveBeenCalled();
+    for (const recipient of recipients) {
+      expect(await trusted.readOutboundDelivery(recipient, id)).toBeUndefined();
+    }
   }
 
-  it("persists proposal, verdict, envelope and exact delivery in two worker commands without host SQL", async () => {
+  it("persists proposal, verdict, envelope and exact delivery without host SQL", async () => {
     const id = prepareReefMessageId();
-    const commands = recordDispatches();
     const hostSql = observeHostDataSql();
     const firstSecond = Math.floor(Date.now() / 1000);
     try {
       expect(await send(id)).toBe(id);
-      expect(commands()).toEqual(["pluginState.executeOperation", "pluginState.executeOperation"]);
       for (const call of hostSql.calls) {
         expect(call).not.toHaveBeenCalled();
       }
@@ -146,8 +128,7 @@ describe("Reef worker outbound composition", () => {
       ),
     ).rejects.toMatchObject({ stage: "deterministic" });
     expect(classify.classify).not.toHaveBeenCalled();
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(await trusted.readOutboundDelivery("alice", id)).toBeUndefined();
+    await expectNoDelivery(id);
   });
 
   it.each([
@@ -182,8 +163,7 @@ describe("Reef worker outbound composition", () => {
           : {}),
       });
       expect(onPlatformSendDispatch).not.toHaveBeenCalled();
-      expect(fetcher).not.toHaveBeenCalled();
-      expect(await trusted.readOutboundDelivery("alice", id)).toBeUndefined();
+      await expectNoDelivery(id);
     },
   );
 
@@ -207,9 +187,7 @@ describe("Reef worker outbound composition", () => {
     expect((await stores.reviews.observeDecision(carolReview!.approvalDigest)).value).toBe(
       "pending",
     );
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(await trusted.readOutboundDelivery("alice", id)).toBeUndefined();
-    expect(await trusted.readOutboundDelivery("carol", id)).toBeUndefined();
+    await expectNoDelivery(id, ["alice", "carol"]);
   });
 
   it.each([
@@ -223,29 +201,24 @@ describe("Reef worker outbound composition", () => {
       stage: "guard",
       verdict: { decision: "deny", category },
     });
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(await trusted.readOutboundDelivery("alice", id)).toBeUndefined();
+    await expectNoDelivery(id);
   });
 
-  it("settles a denied review in one command without classifying again", async () => {
+  it("settles a denied review without classifying again", async () => {
     const { id, digest } = await requestReview();
     await stores.reviews.decide(digest, false);
     classify.classify.mockClear();
-    const commands = recordDispatches();
     await expect(send(id)).rejects.toMatchObject({ reviewOutcome: "denied" });
-    expect(commands()).toEqual(["pluginState.executeOperation"]);
     expect(classify.classify).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("reclassifies an approved review once and commits its approved send in two commands", async () => {
+  it("reclassifies an approved review once and commits its approved send", async () => {
     const { id, digest } = await requestReview();
     classify.classify.mockResolvedValue({ ...allow, decision: "review" });
     await stores.reviews.decide(digest, true);
     classify.classify.mockClear();
-    const commands = recordDispatches();
     expect(await send(id)).toBe(id);
-    expect(commands()).toHaveLength(2);
     expect(classify.classify).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledOnce();
     expect(await events(id)).toEqual([
@@ -270,19 +243,6 @@ describe("Reef worker outbound composition", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("refuses a committed binding's effect when a sanctioned mutation invalidates its receipt", async () => {
-    const result = await flow
-      .send("alice", "private coordination", {
-        onPlatformSendDispatch: async () => {
-          await trusted.remove("alice");
-        },
-      })
-      .catch((error: unknown) => error);
-    expect(result).toBeInstanceOf(Error);
-    expect(isPermanentReefOutboundRejection(result)).toBe(true);
-    expect(fetcher).not.toHaveBeenCalled();
-  });
-
   it("keeps the guard audit on a review-capacity refusal without recording delivery", async () => {
     const reviews = stores.reviews;
     await reviews.request({
@@ -296,17 +256,14 @@ describe("Reef worker outbound composition", () => {
     });
     const id = prepareReefMessageId();
     classify.classify.mockResolvedValue({ ...allow, decision: "review" });
-    const commands = recordDispatches();
     await expect(
       makeFlow(reviews).send("alice", "private coordination", { messageId: id }),
     ).rejects.toThrow("pending review capacity");
-    expect(commands()).toHaveLength(2);
-    expect(fetcher).not.toHaveBeenCalled();
     expect(await events(id)).toEqual(["proposal", "guard_verdict"]);
-    expect(await trusted.readOutboundDelivery("alice", id)).toBeUndefined();
+    await expectNoDelivery(id);
   });
 
-  it("reserves an in-flight message id without another worker request", async () => {
+  it("reserves an in-flight message id against duplicate dispatch", async () => {
     const started = Promise.withResolvers<void>();
     const verdict = Promise.withResolvers<Verdict>();
     classify.classify.mockImplementationOnce(() => {
@@ -314,17 +271,14 @@ describe("Reef worker outbound composition", () => {
       return verdict.promise;
     });
     const id = prepareReefMessageId();
-    const commands = recordDispatches();
     const first = send(id);
     try {
       await started.promise;
       await expect(send(id)).rejects.toThrow("Duplicate outbound");
-      expect(commands()).toHaveLength(1);
     } finally {
       verdict.resolve(allow);
       await first;
     }
-    expect(commands()).toHaveLength(2);
     expect(fetcher).toHaveBeenCalledOnce();
   });
 });

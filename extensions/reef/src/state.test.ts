@@ -94,6 +94,15 @@ function reviewRequest(id = receiptId, approvalDigest = "b".repeat(64)): ReviewR
   };
 }
 
+const decision = async (store: ReviewApprovalStore, digest: string) =>
+  (await store.observeDecision(digest)).value;
+const expectCapacityError = (pending: Promise<unknown>) =>
+  expectReefStateOperationError(
+    pending,
+    "Reef pending review capacity is exhausted",
+    "ReefReviewCapacityError",
+  );
+
 function activateReviewStore(reviews: ReviewApprovalStore) {
   const authority = createReefRuntimeAuthority();
   const stateRuntime = reopen();
@@ -305,12 +314,8 @@ describe("Reef SQLite state", () => {
     const digest = review.approvalDigest;
 
     await expect(reviews.request(review)).resolves.toBeUndefined();
-    await expect(reviews.observeDecision(digest).then((receipt) => receipt.value)).resolves.toBe(
-      "pending",
-    );
-    await expect(
-      reviews.observeDecision("c".repeat(64)).then((receipt) => receipt.value),
-    ).resolves.toBe("none");
+    await expect(decision(reviews, digest)).resolves.toBe("pending");
+    await expect(decision(reviews, "c".repeat(64))).resolves.toBe("none");
     const releaseCommand = activateReviewStore(reviews);
     try {
       for (const action of ["approve", "deny"]) {
@@ -323,9 +328,7 @@ describe("Reef SQLite state", () => {
             },
           }),
         ).rejects.toThrow("owner revoked");
-        await expect(
-          reviews.observeDecision(digest).then((receipt) => receipt.value),
-        ).resolves.toBe("pending");
+        await expect(decision(reviews, digest)).resolves.toBe("pending");
       }
     } finally {
       releaseCommand();
@@ -341,17 +344,9 @@ describe("Reef SQLite state", () => {
     await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     const sql = observeHostDataSql().calls;
-    await expect(
-      restored.observeDecision(digest).then((receipt) => receipt.value),
-    ).resolves.toEqual({
-      approved: true,
-    });
-    await expect(
-      restored.observeDecision(pendingReview.approvalDigest).then((receipt) => receipt.value),
-    ).resolves.toBe("pending");
-    await expect(
-      restored.observeDecision("c".repeat(64)).then((receipt) => receipt.value),
-    ).resolves.toBe("none");
+    await expect(decision(restored, digest)).resolves.toEqual({ approved: true });
+    await expect(decision(restored, pendingReview.approvalDigest)).resolves.toBe("pending");
+    await expect(decision(restored, "c".repeat(64))).resolves.toBe("none");
     await expect(restored.list()).resolves.toEqual([pendingReview]);
     const releaseList = activateReviewStore(restored);
     try {
@@ -416,15 +411,9 @@ describe("Reef SQLite state", () => {
     const raw = rawStore(REEF_REVIEWS_NAMESPACE);
     beforeNextStateOperation(runtime, () => raw.register(first.approvalDigest, { review: first }));
 
-    await expectReefStateOperationError(
-      reviews.request(next),
-      "Reef pending review capacity is exhausted",
-      "ReefReviewCapacityError",
-    );
+    await expectCapacityError(reviews.request(next));
     await expect(reviews.list()).resolves.toEqual([first]);
-    await expect(
-      reviews.observeDecision(next.approvalDigest).then((receipt) => receipt.value),
-    ).resolves.toBe("none");
+    await expect(decision(reviews, next.approvalDigest)).resolves.toBe("none");
   });
 
   it.each(["request", "channel decision", "owner decision"] as const)(
@@ -457,12 +446,10 @@ describe("Reef SQLite state", () => {
           : reviews.decide(first.approvalDigest, true, assertOwnerCurrent),
       ).rejects.toBe(revoked);
       const reopened = new ReviewApprovalStore(reopen(), 1);
-      await expect(
-        reopened.observeDecision(first.approvalDigest).then((receipt) => receipt.value),
-      ).resolves.toEqual(action === "request" ? { approved: false } : "pending");
-      await expect(
-        reopened.observeDecision("2".repeat(64)).then((receipt) => receipt.value),
-      ).resolves.toBe("none");
+      await expect(decision(reopened, first.approvalDigest)).resolves.toEqual(
+        action === "request" ? { approved: false } : "pending",
+      );
+      await expect(decision(reopened, "2".repeat(64))).resolves.toBe("none");
     },
   );
 
@@ -523,7 +510,7 @@ describe("Reef SQLite state", () => {
     );
     const request = reviews.request(review);
     await entered.promise;
-    const decision = reviews.decide(original.approvalDigest, true);
+    const approved = reviews.decide(original.approvalDigest, true);
     const lookup = reviews.observeDecision(original.approvalDigest);
     const pending = reviews.list();
     env.OPENCLAW_STATE_DIR = redirectedDir;
@@ -531,17 +518,15 @@ describe("Reef SQLite state", () => {
 
     try {
       await expect(request).resolves.toBeUndefined();
-      await expect(decision).resolves.toEqual(original);
+      await expect(approved).resolves.toEqual(original);
       await expect(lookup.then((receipt) => receipt.value)).resolves.toEqual({ approved: true });
       await expect(pending).resolves.toEqual([retained]);
-      await expect(
-        redirected.observeDecision(original.approvalDigest).then((receipt) => receipt.value),
-      ).resolves.toEqual({
+      await expect(decision(redirected, original.approvalDigest)).resolves.toEqual({
         approved: false,
       });
     } finally {
       finish.resolve();
-      await Promise.allSettled([request, decision, lookup, pending]);
+      await Promise.allSettled([request, approved, lookup, pending]);
     }
   });
 
@@ -575,11 +560,7 @@ describe("Reef SQLite state", () => {
     ]);
     await store.decide(first.approvalDigest, false);
     await store.request(second);
-    await expectReefStateOperationError(
-      store.request(third),
-      "Reef pending review capacity is exhausted",
-      "ReefReviewCapacityError",
-    );
+    await expectCapacityError(store.request(third));
 
     await expect(store.list()).resolves.toEqual([second]);
     assertNoHostSql(sql.calls);
