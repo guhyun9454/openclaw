@@ -1073,12 +1073,12 @@ try {
                       );
                       await page.evaluate(
                         (payload) => {
-                          const gateway = (
+                          const fixtureGateway = (
                             window as Window & {
                               openclawControlUiE2eGateway?: ControlUiMockGateway;
                             }
                           ).openclawControlUiE2eGateway!;
-                          gateway.setRequestHandler("workboard.cards.list", ({ respond }) =>
+                          fixtureGateway.setRequestHandler("workboard.cards.list", ({ respond }) =>
                             respond(payload),
                           );
                         },
@@ -1098,12 +1098,12 @@ try {
                         ),
                       };
                       await page.evaluate((payload) => {
-                        const gateway = (
+                        const fixtureGateway = (
                           window as Window & {
                             openclawControlUiE2eGateway?: ControlUiMockGateway;
                           }
                         ).openclawControlUiE2eGateway!;
-                        gateway.setRequestHandler("mcp-relay.grants", ({ respond }) =>
+                        fixtureGateway.setRequestHandler("mcp-relay.grants", ({ respond }) =>
                           respond(payload),
                         );
                       }, snapshot);
