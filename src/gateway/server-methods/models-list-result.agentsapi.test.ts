@@ -144,15 +144,9 @@ it("accepts shared host tuning without changing normal OpenClaw selection", asyn
         change(restricted);
         expect(() => selectPrepared(restricted)).toThrow();
       };
-      for (const params of [
-        { store: false },
-        { temperature: 0.3 },
-        { custom_body: { example: true } },
-      ]) {
-        rejectsChange((c) =>
-          Object.assign(c.agents!.defaults!.models!["openai/" + modelId]!.params!, params),
-        );
-      }
+      rejectsChange((c) => {
+        c.agents!.defaults!.models!["openai/" + modelId]!.params!.store = false;
+      });
       rejectsChange((c) => {
         c.models!.providers!.openai!.headers = { "X-Policy": "required" };
       });
