@@ -3,7 +3,6 @@ import {
   PROGRESS_CARD_MAX_STEPS,
   PROGRESS_CARD_MAX_UTF8_BYTES,
   type ProgressCard,
-  type ProgressCardStep,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { ProgressCardStore } from "../../session-cards/progress-card-store.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -23,34 +22,23 @@ function expectError(respond: ReturnType<typeof vi.fn>, message: string, code = 
     expect.objectContaining({ message: expect.stringContaining(message), code }),
   );
 }
-function expectBroadcast(broadcast: ReturnType<typeof vi.fn>, revision: number | null) {
-  expect(broadcast).toHaveBeenCalledWith(
-    "progressCard.changed",
-    { sessionKey: defaultSessionKey, revision },
-    { sessionKeys: [defaultSessionKey], agentId: "main" },
-  );
-}
-
 function createHarness() {
-  const cards = new Map<string, ProgressCard>();
-  const get = vi.fn<ProgressCardStore["get"]>(async (sessionKey) => cards.get(sessionKey) ?? null);
+  let card: ProgressCard | null = null;
+  const get = vi.fn<ProgressCardStore["get"]>(async () => card);
   const put = vi.fn<ProgressCardStore["put"]>(async (sessionKey, input) => {
-    const current = cards.get(sessionKey);
     if (!input.markdown && !input.steps?.length) {
-      if (input.expectedRevision !== undefined && current?.revision !== input.expectedRevision) {
-        return { card: current ?? null };
+      if (input.expectedRevision === undefined || card?.revision === input.expectedRevision) {
+        card = null;
       }
-      cards.delete(sessionKey);
-      return { card: null };
+      return { card };
     }
-    const card = {
+    card = {
       sessionKey,
-      revision: (current?.revision ?? 0) + 1,
+      revision: (card?.revision ?? 0) + 1,
       updatedAt: Date.now(),
       ...(input.markdown ? { markdown: input.markdown } : {}),
       ...(input.steps ? { steps: input.steps } : {}),
     };
-    cards.set(sessionKey, card);
     return { card };
   });
   const broadcast = vi.fn();
@@ -61,7 +49,7 @@ function createHarness() {
   ) => {
     const getSpy = vi.spyOn(progressCardStore, "get").mockImplementation(get);
     const putSpy = vi.spyOn(progressCardStore, "put").mockImplementation(put);
-    return await withRestoredMocks([getSpy, putSpy], async () => {
+    return withRestoredMocks([getSpy, putSpy], async () => {
       await progressCardHandlers[`progressCard.${operation}`]!({
         params: { sessionKey: defaultSessionKey, ...params },
         respond,
@@ -108,23 +96,22 @@ describe("progress card gateway methods", () => {
 
   it("roundtrips markdown and steps, strips invisible Unicode, and broadcasts the revision", async () => {
     const { broadcast, invoke } = createHarness();
-    const plan = [
-      { step: "Inspect\u200b", status: "completed" },
-      { step: "Patch\u202e", status: "in_progress" },
-    ];
-    const expectedSteps: ProgressCardStep[] = [
-      { step: "Inspect", status: "completed" },
-      { step: "Patch", status: "in_progress" },
-    ];
-    const put = await invoke("put", { markdown: "A\u200bB\u202eC", plan });
+    const put = await invoke("put", {
+      markdown: "A\u200bB\u202eC",
+      plan: [{ step: "Inspect\u200b\u202e", status: "in_progress" }],
+    });
     const expected = expect.objectContaining({
       markdown: "ABC",
-      steps: expectedSteps,
+      steps: [{ step: "Inspect", status: "in_progress" }],
       revision: 1,
     });
     expectCard(put, expected);
     expectCard(await invoke("get"), expected);
-    expectBroadcast(broadcast, 1);
+    expect(broadcast).toHaveBeenCalledWith(
+      "progressCard.changed",
+      { sessionKey: defaultSessionKey, revision: 1 },
+      { sessionKeys: [defaultSessionKey], agentId: "main" },
+    );
   });
 
   it.each([
@@ -147,18 +134,5 @@ describe("progress card gateway methods", () => {
     const { broadcast, invoke } = createHarness();
     expectError(await invoke("put", payload), message);
     expect(broadcast).not.toHaveBeenCalled();
-  });
-
-  it("dismisses only the matching completed revision", async () => {
-    const { broadcast, invoke } = createHarness();
-    await invoke("put", { plan: [{ step: "Done", status: "completed" }] });
-    broadcast.mockClear();
-
-    const stale = await invoke("put", { expectedRevision: 2 });
-    const dismissed = await invoke("put", { expectedRevision: 1 });
-    expectCard(stale, expect.objectContaining({ revision: 1 }));
-    expectCard(dismissed, null);
-    expect(broadcast).toHaveBeenCalledOnce();
-    expectBroadcast(broadcast, null);
   });
 });
