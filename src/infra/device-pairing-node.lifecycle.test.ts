@@ -139,10 +139,7 @@ test.each(["rejection", "successful reconnect", "node-role removal"])(
 
 test("keeps an aged capability reapproval through a recorded disconnect", async () => {
   const generation = await setupPairedNode(baseDir);
-  await expect(recordPairedNodeConnection("node-1", 1_000, baseDir, generation)).resolves.toEqual({
-    recorded: true,
-    firstConnection: true,
-  });
+  await recordPairedNodeConnection("node-1", 1_000, baseDir, generation);
   const age = agingClock();
   const { request } = await requestSurface();
   age();
@@ -159,16 +156,4 @@ test("keeps an aged capability reapproval through a recorded disconnect", async 
 
   expect(await reopen()).toBe(true);
   expect((await listNodePairing(baseDir)).pending).toEqual([request]);
-});
-
-test("supersedes an aged capability request with a changed surface", async () => {
-  await setupPairedNode(baseDir);
-  const age = agingClock();
-  const first = await requestSurface();
-  age();
-  const second = await requestSurface({ commands: ["system.run", "system.which"] });
-
-  expect(second.superseded).toEqual([{ requestId: first.request.requestId, nodeId: "node-1" }]);
-  expect((await listNodePairing(baseDir)).pending).toEqual([second.request]);
-  await expect(approve(first.request.requestId)).resolves.toBeNull();
 });

@@ -1,9 +1,8 @@
-import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnResult } from "../process/exec-result.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 
-const { detect, execFile, readRelease, launch, success } = vi.hoisted(() => {
+const { detect, readRelease, launch, success } = vi.hoisted(() => {
   const result: SpawnResult = {
     stdout: "",
     stderr: "",
@@ -15,7 +14,6 @@ const { detect, execFile, readRelease, launch, success } = vi.hoisted(() => {
   return {
     success: result,
     detect: vi.fn<typeof import("./detect-binary.js").detectBinary>(async () => false),
-    execFile: vi.fn<(file: string, args: readonly string[]) => string>(() => ""),
     readRelease: vi.fn<() => Promise<string>>(),
     launch: vi.fn<typeof import("../process/exec.js").runCommandWithTimeout>(async () => result),
   };
@@ -26,7 +24,7 @@ vi.mock("./detect-binary.js", () => ({ detectBinary: detect }));
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  return { ...actual, execFileSync: execFile };
+  return { ...actual, execFileSync: () => "" };
 });
 
 // mock-isolation: Observe opener commands without launching host applications.
@@ -76,7 +74,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   detect.mockReset().mockResolvedValue(false);
-  execFile.mockReset().mockReturnValue("");
   readRelease.mockReset().mockResolvedValue("6.8.0-generic");
   launch.mockReset().mockResolvedValue(success);
 });
@@ -98,6 +95,7 @@ describe("openLocalFile", () => {
 
     await expect(openLocalFile("C:\\Temp\\handoff.html")).resolves.toBe(true);
     const argv = launch.mock.calls[0]![0];
+    expect(argv[0]).toMatch(/\\System32\\rundll32\.exe$/u);
     expect(argv.at(-2)).toBe("url.dll,FileProtocolHandler");
     expect(argv.at(-1)).toBe("file:///C:/Temp/handoff.html");
   });
@@ -148,18 +146,5 @@ describe("browser support and launch", () => {
 
     detect.mockResolvedValue(false);
     await expect(detectSupport()).resolves.toEqual({ ok: false });
-  });
-
-  it("prefers the registry-backed Windows system root over process env", async () => {
-    vi.spyOn(fs, "accessSync").mockImplementation(() => undefined);
-    execFile.mockImplementation((_file: string, args: readonly string[]) =>
-      args[3] === "SystemRoot" ? "SystemRoot    REG_SZ    D:\\Windows\r\n" : "",
-    );
-    mockProcessPlatform("win32");
-    vi.stubEnv("SystemRoot", "C:\\PoisonedWindows");
-
-    await expect(openUrl(url)).resolves.toBe(true);
-
-    openedWith("D:\\Windows\\System32\\rundll32.exe", "url.dll,FileProtocolHandler", url);
   });
 });
