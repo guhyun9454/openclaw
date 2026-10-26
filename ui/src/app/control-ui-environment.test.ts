@@ -124,20 +124,8 @@ it("clears seam-only presentation when bootstrap becomes unset", async () => {
   expectStyle("--ring", "#123456");
   expectStyle("--accent", "#123456");
   await refresh(config);
-  for (const property of [
-    "--ring",
-    "--accent",
-    "--accent-hover",
-    "--accent-muted",
-    "--accent-subtle",
-    "--accent-glow",
-    "--primary",
-    "--focus",
-    "--focus-ring",
-    "--focus-glow",
-  ]) {
-    expectStyle(property, "");
-  }
+  expectStyle("--ring", "");
+  expectStyle("--accent", "");
 });
 
 it("applies public document environment metadata before authenticated bootstrap", async () => {

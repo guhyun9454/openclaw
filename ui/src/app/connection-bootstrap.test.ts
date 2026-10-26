@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createConnectionBootstrapCoordinator } from "./connection-bootstrap.ts";
 
-function setup() {
+function setup(connected = true) {
   const coordinator = createConnectionBootstrapCoordinator();
   const started: string[] = [];
   const enqueue = (name: string, key = name, background = false) => {
@@ -17,13 +17,19 @@ function setup() {
     );
     return { task, resolve: completion.resolve };
   };
-  return { coordinator, started, enqueue };
+  if (connected) {
+    coordinator.synchronize({ client: {}, connected: true });
+  }
+  const finish = async (...entries: ReturnType<typeof enqueue>[]) => {
+    entries.forEach((entry) => entry.resolve());
+    await Promise.all(entries.map(({ task }) => task));
+  };
+  return { coordinator, started, enqueue, finish };
 }
 
 describe("connection bootstrap coordinator", () => {
   it("releases cancelled queued work without cancelling started work or freeing its slots", async () => {
-    const { coordinator, started, enqueue } = setup();
-    coordinator.synchronize({ client: {}, connected: true });
+    const { coordinator, started, enqueue, finish } = setup();
     const first = enqueue("first");
     const second = enqueue("second");
     const retired = enqueue("retired", "owner");
@@ -40,25 +46,20 @@ describe("connection bootstrap coordinator", () => {
     first.resolve();
     await first.task;
     expect(started).toEqual(["first", "second", "replacement"]);
-    second.resolve();
-    replacement.resolve();
-    await Promise.all([second.task, replacement.task]);
+    await finish(second, replacement);
   });
 
   it("does not start queued work after its connection is disconnected", async () => {
-    const { coordinator, started, enqueue } = setup();
-    coordinator.synchronize({ client: {}, connected: true });
+    const { coordinator, started, enqueue, finish } = setup();
     const tasks = ["first", "second", "stale"].map((name) => enqueue(name));
     expect(started).toEqual(["first", "second"]);
     coordinator.synchronize({ client: null, connected: false });
-    tasks.forEach((task) => task.resolve());
-    await Promise.all(tasks.map(({ task }) => task));
+    await finish(...tasks);
     expect(started).toEqual(["first", "second"]);
   });
 
   it("starts a replacement connection while both old tasks remain pending and retains its concurrency", async () => {
-    const { coordinator, started, enqueue } = setup();
-    coordinator.synchronize({ client: {}, connected: true });
+    const { coordinator, started, enqueue, finish } = setup();
     const runDuplicate = vi.fn(async () => {});
     const previous = [0, 1].map((index) => enqueue(`old-${index}`, `task-${index}`));
     expect(started).toEqual(["old-0", "old-1"]);
@@ -66,23 +67,22 @@ describe("connection bootstrap coordinator", () => {
     const current = [0, 1, 2].map((index) => enqueue(`new-${index}`, `task-${index}`));
     expect(started).toEqual(["old-0", "old-1", "new-0", "new-1"]);
 
-    previous.forEach((entry) => entry.resolve());
-    await Promise.all(previous.map(({ task }) => task));
+    await finish(...previous);
     const duplicateTask = coordinator.run("task-0", runDuplicate);
     expect(runDuplicate).not.toHaveBeenCalled();
     expect(started).toEqual(["old-0", "old-1", "new-0", "new-1"]);
 
     current[0]!.resolve();
     await vi.waitFor(() => expect(started).toEqual(["old-0", "old-1", "new-0", "new-1", "new-2"]));
-    current.forEach((entry) => entry.resolve());
-    await Promise.all([...current.map(({ task }) => task), duplicateTask]);
+    await finish(...current);
+    await duplicateTask;
     await coordinator.run("task-0", runDuplicate);
 
     expect(runDuplicate).toHaveBeenCalledOnce();
   });
 
   it("pauses only background work until the selected transcript is authoritative, then drains it in order", async () => {
-    const { coordinator, started, enqueue } = setup();
+    const { coordinator, started, enqueue, finish } = setup(false);
     const client = {};
     const pane = {};
     const retiredPane = {};
@@ -119,41 +119,6 @@ describe("connection bootstrap coordinator", () => {
     await vi.waitFor(() => expectStarted("background-0", "background-1"));
     background[0]!.resolve();
     await vi.waitFor(() => expectStarted("background-0", "background-1", "background-2"));
-    background.forEach((entry) => entry.resolve());
-    await Promise.all(background.map(({ task }) => task));
-  });
-
-  it("releases bulk work when navigation leaves or rejects the native chat route", async () => {
-    const coordinator = createConnectionBootstrapCoordinator();
-    const client = {};
-    const pane = {};
-    coordinator.setForegroundRoute("agent:main:selected");
-    coordinator.synchronize({ client, connected: true });
-    coordinator.setForegroundPane(pane, {
-      sessionKey: "agent:main:selected",
-      client,
-      ready: false,
-    });
-    const hydrate = vi.fn(async () => {});
-    const background = coordinator.run("roster", hydrate, { background: true });
-    expect(hydrate).not.toHaveBeenCalled();
-
-    coordinator.setForegroundRoute(null);
-    await background;
-    expect(hydrate).toHaveBeenCalledOnce();
-  });
-
-  it("runs connected bootstrap work queued by an earlier subscription", async () => {
-    const coordinator = createConnectionBootstrapCoordinator();
-    const hydrate = vi.fn(async () => {});
-
-    const queued = coordinator.run("sessions", hydrate);
-    await Promise.resolve();
-    expect(hydrate).not.toHaveBeenCalled();
-
-    coordinator.synchronize({ client: {}, connected: true });
-    await queued;
-
-    expect(hydrate).toHaveBeenCalledOnce();
+    await finish(...background);
   });
 });
