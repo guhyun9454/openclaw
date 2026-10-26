@@ -27,7 +27,7 @@ async function fixture(connectionCount = 1) {
   const prepare = (
     value: GatewaySessionRow,
     ancestors?: ReturnType<typeof prepareSessionAncestor>[],
-    revision?: string,
+    revision?: Parameters<ConnectionSessionRows["prepareDelivery"]>[2],
     connection = owner,
   ) => connection.prepareDelivery(value, ancestors, revision, diff);
   const deliver = (value: GatewaySessionRow, connection = owner) =>

@@ -145,10 +145,9 @@ test.for(["sessions.reset", "sessions.delete"] as const)(
     await nextTurn();
     expect(retirementFinished).toBe(false);
     expect(mutationFinished).toBe(false);
-    expect(readEntry()).toMatchObject({
-      sessionId,
-      lifecycleRevision: initialEntry?.lifecycleRevision,
-    });
+    const pendingEntry = readEntry();
+    expect(pendingEntry?.sessionId).toBe(sessionId);
+    expect(pendingEntry?.lifecycleRevision).toBe(initialEntry?.lifecycleRevision);
     terminate.resolve();
     await withinTest(sweep, signal);
     expect(await withinTest(mutation, signal)).toMatchObject({ ok: true });

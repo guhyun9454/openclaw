@@ -9,7 +9,7 @@ import { ChatNotice } from "./chat-divider.tsx";
 
 let container: HTMLDivElement;
 let noticeView: { update: (props: Parameters<typeof ChatNotice>[0]) => void } | undefined;
-const query = <T extends Element = HTMLElement>(selector: string) =>
+const query = <T extends Element = HTMLElement>(selector: string): T | null =>
   container.querySelector<T>(selector);
 const part = (name: string) => query(`.chat-run-failure__${name}`);
 const retry = () => query<HTMLButtonElement>(".chat-run-failure__retry")?.click();

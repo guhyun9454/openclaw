@@ -72,16 +72,18 @@ function createPluginFixture(
 }
 
 describe("plugin manifest backup resources", () => {
-  const invalidPaths = [
-    ["an absolute POSIX path", "/outside"],
-    ["a Windows drive-relative path", "C:outside"],
-    ["a backslash separator", "owner\\cache"],
-    ["a NUL byte", "owner/\0cache"],
-    ["an empty path", ""],
-    ["an empty segment", "owner//cache"],
-    ["a current-directory segment", "owner/./cache"],
-    ["a parent-directory segment", "owner/../outside"],
-  ].map(([label, relativePath]) => [label, [resource({ relativePath })]] as const);
+  const invalidPaths = (
+    [
+      ["an absolute POSIX path", "/outside"],
+      ["a Windows drive-relative path", "C:outside"],
+      ["a backslash separator", "owner\\cache"],
+      ["a NUL byte", "owner/\0cache"],
+      ["an empty path", ""],
+      ["an empty segment", "owner//cache"],
+      ["a current-directory segment", "owner/./cache"],
+      ["a parent-directory segment", "owner/../outside"],
+    ] as const
+  ).map(([label, relativePath]) => [label, [resource({ relativePath })]] as const);
   it.each([
     ...invalidPaths,
     ["non-array declarations", {}],
@@ -92,7 +94,7 @@ describe("plugin manifest backup resources", () => {
     ["unsupported database family", [resource({ databaseFamily: "unknown" })]],
     ["regenerable database", [resource({ disposition: "regenerable", databaseFamily: "state" })]],
     ["agent-scoped database", [resource({ scope: "agent", databaseFamily: "state" })]],
-  ])("rejects %s", (_label, backupResources) => {
+  ] as const)("rejects %s", (_label, backupResources) => {
     const fixture = createPluginFixture(backupResources);
     expect(loadPluginManifest(fixture.pluginRoot)).toMatchObject({
       ok: false,
