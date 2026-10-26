@@ -49,6 +49,26 @@ function resolve(overrides: Partial<Parameters<typeof projectModelServiceTiers>[
     ...overrides,
   });
 }
+const apiTiers = (selected: ModelAuthAvailabilityEvaluation) =>
+  resolve({
+    entry: { provider: "openai", id: "synthetic-api-model" },
+    evaluation: selected,
+    runtimeId: "openclaw",
+    snapshot: snapshot([]),
+  });
+it.each(["synthetic-provider-key", undefined])(
+  "offers embedded API-key tiers for provider config %j without a profile",
+  (apiKey) => {
+    const selected = evaluate({
+      cfg: providerConfig("openai", { ...platformRoute, apiKey, models: [] }),
+      env: { OPENAI_API_KEY: "synthetic-provider-key" },
+      ref: { modelId: "synthetic-api-model", runtimeId: "openclaw" },
+    });
+    expect(selected.availability).toBe(true);
+    expect(selected.selectedProfileId).toBeUndefined();
+    expect(apiTiers(selected)).toEqual(["priority", "ultrafast"]);
+  },
+);
 it.each(["literal", "ref"] as const)(
   "evicts %s binding downgrades on record and fences stale observers",
   (kind) => {
@@ -62,10 +82,12 @@ it.each(["literal", "ref"] as const)(
     };
     const cfg = providerConfig("openai", provider);
     const env = { FIXTURE_KEY_A: "synthetic-key-a", FIXTURE_KEY_B: "synthetic-key-b" };
-    const accountCatalog = createPreparedAccountCatalogAccess(() => true, undefined, cfg);
+    const retirement = new AbortController();
+    const accountCatalog = createPreparedAccountCatalogAccess(() => true, retirement.signal, cfg);
     const selected = () => evaluate({ cfg, env });
     const credential = expectDefined(selected().selectedCredential, "direct credential");
     assert(credential.source === "direct");
+    const tiers = (selectedEvaluation = selected()) => apiTiers(selectedEvaluation);
     const observation = {
       modelId: "synthetic-api-model",
       runtimeId: "openclaw",
@@ -74,15 +96,21 @@ it.each(["literal", "ref"] as const)(
       responseTier: "priority",
     };
     const record = accountCatalog.prepareServiceTierObserver({ selectedCredential: credential });
-    const read = () =>
+    const read = (overrides: Partial<typeof observation> = {}) =>
       accountCatalog.readServiceTierObservations({
         ...observation,
         identityKey: credential.identityKey,
+        ...overrides,
       });
     expect(record(observation)).toBe(true);
+    expect(tiers()).toEqual(["priority", "ultrafast"]);
     const republished = evaluate({ cfg: { ...cfg, gateway: { port: 19001 } }, env });
     expect(republished.selectedCredential?.source).toBe("direct");
+    expect(tiers(republished)).toEqual(["priority", "ultrafast"]);
+    expect(read({ modelId: "other-model" })).toEqual([]);
+    expect(read({ baseUrl: "https://other.example/v1" })).toEqual([]);
     accountCatalog.reconcileAuth({ version: 1, profiles: {} }, () => true);
+    expect(tiers()).toEqual(["priority", "ultrafast"]);
     const originalBinding = structuredClone(provider.apiKey);
     if (typeof provider.apiKey === "string") {
       provider.apiKey = "synthetic-key-b";
@@ -100,10 +128,14 @@ it.each(["literal", "ref"] as const)(
     const next = selected();
     expect(next.selectedCredential).toEqual(credential);
     expect(credential.identityKey).toBe("direct:openai");
+    expect(tiers(next)).toEqual(["priority", "ultrafast"]);
     const replacement = accountCatalog.prepareServiceTierObserver({
       selectedCredential: expectDefined(next.selectedCredential, "replacement credential"),
     });
     expect(replacement(observation)).toBe(true);
+    retirement.abort();
+    expect(replacement(observation)).toBe(false);
+    expect(read()).toEqual([]);
   },
 );
 it("projects only the selected account/model/runtime/route and clears unknown observations", () => {

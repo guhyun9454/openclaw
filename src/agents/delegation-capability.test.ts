@@ -35,6 +35,8 @@ describe("delegation capability", () => {
     "wrong session",
     "wrong model",
     "missing lineage",
+    "disabled",
+    "capped",
   ])("preserves only a verified requester continuation on fallback: %s", (state) => {
     const child = "agent:main:subagent:child";
     const parent = "agent:main:main";
@@ -57,18 +59,12 @@ describe("delegation capability", () => {
       model: "gpt-4.1-mini",
     });
     current = state !== "revoked";
-    const lineage = {
-      [child]: {
-        spawnedBy: parent,
-        spawnDepth: 1,
-        inheritedToolPolicyVersion: 1,
-        inheritedToolAllow: ["sessions_send", "sessions_spawn"],
-      },
-    };
     expect(
       resolveDelegationCapability({
         fallbackActive: true,
         inputProvenance: { kind: "inter_session", sourceTool, sourceSessionKey: child },
+        disableTools: state === "disabled",
+        toolsAllow: state === "capped" ? ["message"] : undefined,
         requesterContinuation: {
           config: {},
           sessionKey: parent,
@@ -76,7 +72,17 @@ describe("delegation capability", () => {
           modelProvider: "openai",
           modelId: state === "wrong model" ? "gpt-4.1" : "gpt-4.1-mini",
           trustedInternalHandoff: state === "provenance only" ? undefined : handoff,
-          preparedSessionCapabilityStore: state === "missing lineage" ? {} : lineage,
+          preparedSessionCapabilityStore:
+            state === "missing lineage"
+              ? {}
+              : {
+                  [child]: {
+                    spawnedBy: parent,
+                    spawnDepth: 1,
+                    inheritedToolPolicyVersion: 1,
+                    inheritedToolAllow: ["sessions_send", "sessions_spawn"],
+                  },
+                },
         },
       }),
     ).toBe(state === "current" ? "host_only" : "report_only");
@@ -98,21 +104,21 @@ describe("delegation capability", () => {
     [{ toolsAllow: ["message"] }, "report_only"],
     [{ toolsAllow: ["message", "*"] }, "full"],
     [{ toolsAllow: ["sessions_*"] }, "full"],
-    [
-      {
-        toolsAllow: attachToolAllowlistIntersection(
-          ["sessions_spawn", "message"],
-          [["sessions_spawn", "message"], ["message"]],
-        ),
-      },
-      "report_only",
-    ],
   ] satisfies [Parameters<typeof resolveReport>[0], string][])(
     "resolves completion capability for %j",
     (params, expected) => {
       expect(resolveReport(params)).toBe(expected);
     },
   );
+
+  it("preserves independent allowlist intersections for completion reports", () => {
+    const toolsAllow = attachToolAllowlistIntersection(
+      ["sessions_spawn", "message"],
+      [["sessions_spawn", "message"], ["message"]],
+    );
+
+    expect(resolveReport({ toolsAllow })).toBe("report_only");
+  });
 
   it("removes delegation tools but retains ordinary reporting tools", () => {
     const tools = [
@@ -135,19 +141,28 @@ describe("delegation capability", () => {
     expect(applyDelegationCapability(tools, "host_only")).toBe(tools);
   });
 
-  it("retains plugin ownership and reporting actions while rejecting new background work", async () => {
+  it("keeps status and cleanup actions while rejecting new background work", async () => {
     const tools = [createTool("cron"), createTool("image_generate")];
-    setPluginToolMeta(tools[0]!, { pluginId: "scheduler" } as never);
     const [cron, image] = applyDelegationCapability(tools, "report_only");
-    expect(cron).not.toBe(tools[0]);
-    expect(getPluginToolMeta(cron!)).toEqual({ pluginId: "scheduler" });
 
     const result = { content: [], details: {} };
     const denied = "New delegation is unavailable";
+    await expect(cron?.execute("cron-status", { action: "status" })).resolves.toEqual(result);
     await expect(cron?.execute("cron-remove", { action: "remove" })).resolves.toEqual(result);
+    await expect(cron?.execute("cron-add", { action: "add" })).rejects.toThrow(denied);
     await expect(image?.execute("image-status", { action: "status" })).resolves.toEqual(result);
     await expect(image?.execute("image-generate", {})).rejects.toThrow(denied);
-    expect(tools[0]?.execute).toHaveBeenCalledTimes(1);
+    expect(tools[0]?.execute).toHaveBeenCalledTimes(2);
     expect(tools[1]?.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves plugin ownership metadata through the report-only wrapper", () => {
+    const cron = createTool("cron");
+    setPluginToolMeta(cron, { pluginId: "scheduler" } as never);
+
+    const [wrapped] = applyDelegationCapability([cron], "report_only");
+
+    expect(wrapped).not.toBe(cron);
+    expect(getPluginToolMeta(wrapped as AnyAgentTool)).toEqual({ pluginId: "scheduler" });
   });
 });
