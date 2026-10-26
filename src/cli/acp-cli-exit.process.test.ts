@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { stripVTControlCharacters } from "node:util";
 import { expect, it, onTestFinished } from "vitest";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
@@ -52,34 +53,22 @@ function withoutSqliteTransactionWarnings(stderr: string): string {
     .join("\n");
 }
 
-function waitForJsonLine(child: ChildProcessWithoutNullStreams, id: number) {
-  return new Promise<Record<string, unknown>>((resolve, reject) => {
-    let stdout = "";
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      reject(new Error(`ACP process exited before response (code=${code}, signal=${signal})`));
-    };
-    const finish = (response: Record<string, unknown>) => {
-      child.off("exit", onExit);
-      resolve(response);
-    };
-
-    child.once("exit", onExit);
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-      const lines = stdout.split("\n");
-      stdout = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) {
-          continue;
-        }
-        const response = JSON.parse(line) as Record<string, unknown>;
-        if (response.id === id) {
-          finish(response);
-          return;
-        }
+async function waitForJsonLine(child: ChildProcessWithoutNullStreams, id: number) {
+  const lines = createInterface({ input: child.stdout });
+  try {
+    for await (const line of lines) {
+      if (!line.trim()) {
+        continue;
       }
-    });
-  });
+      const response = JSON.parse(line) as Record<string, unknown>;
+      if (response.id === id) {
+        return response;
+      }
+    }
+    throw new Error("ACP stdout ended before the initialize response");
+  } finally {
+    lines.close();
+  }
 }
 
 it("exits when the client disconnects after sending an initialize frame", async () => {

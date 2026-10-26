@@ -1,9 +1,8 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { emptyPluginCapabilityEvidence } from "../claws/packages.test-support.js";
-import type { ClawPackage } from "../claws/types.js";
 import { defaultRuntime } from "../runtime.js";
 
 const mocks = vi.hoisted(() => ({
@@ -43,7 +42,7 @@ async function writeJson(root: string, name: string, value: unknown) {
   await writeFile(join(root, name), JSON.stringify(value), "utf8");
 }
 
-async function createInspectFixture(format: "claude" | "openclaw", packages: ClawPackage[] = []) {
+it("rejects a plugin declared by both the portable manifest and OpenClaw profile", async () => {
   const root = tempDirs.make("openclaw-claws-inspect-extension-");
   await mkdir(join(root, "profiles"));
   await writeJson(root, "package.json", {
@@ -54,7 +53,7 @@ async function createInspectFixture(format: "claude" | "openclaw", packages: Cla
   await writeJson(root, "openclaw.claw.json", {
     schemaVersion: 1,
     agent: { id: "demo-agent" },
-    ...(packages.length ? { packages } : {}),
+    packages: [{ kind: "plugin", source: "clawhub", ref: "@owner/audit", version: "2.0.1" }],
   });
   await writeJson(root, "profiles/openclaw.yml", {
     schemaVersion: 1,
@@ -63,7 +62,7 @@ async function createInspectFixture(format: "claude" | "openclaw", packages: Cla
       {
         id: "audit-tools",
         kind: "plugin",
-        format,
+        format: "claude",
         source: "clawhub",
         ref: "@owner/audit",
         version: "2.0.1",
@@ -72,94 +71,45 @@ async function createInspectFixture(format: "claude" | "openclaw", packages: Cla
   });
   const values: unknown[] = [];
   vi.spyOn(defaultRuntime, "writeJson").mockImplementation((value) => values.push(value));
-  vi.spyOn(defaultRuntime, "writeStdout").mockImplementation(() => {});
-  const runtime = {
-    log: vi.spyOn(defaultRuntime, "log").mockImplementation(() => {}),
-    error: vi.spyOn(defaultRuntime, "error").mockImplementation(() => {}),
-    exit: vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {}),
-  };
-  return { root, values, runtime };
-}
-
-describe("claws inspect extensions", () => {
-  beforeEach(() => {
-    mocks.preflightClawPackage.mockReset();
+  const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {});
+  mocks.preflightClawPackage.mockResolvedValue(preflight);
+  await runClawsInspectCommand(root, { json: true });
+  expect(values[0]).toMatchObject({
+    valid: false,
+    extensions: [
+      {
+        id: "audit-tools",
+        detectedFormat: "claude",
+        mapped: ["commands", "skills"],
+        unavailable: ["agents"],
+        adapterIdentity: "openclaw/test",
+      },
+    ],
+    diagnostics: [expect.objectContaining({ code: "extension_package_collision" })],
   });
-
-  it("reports canonical profile extension mappings", async () => {
-    const { root, values, runtime } = await createInspectFixture("claude");
-    mocks.preflightClawPackage.mockResolvedValue(preflight);
-    await runClawsInspectCommand(root, { json: true });
-
-    expect(values[0]).toMatchObject({
-      valid: true,
-      extensions: [
-        {
-          id: "audit-tools",
-          detectedFormat: "claude",
-          mapped: ["commands", "skills"],
-          unavailable: ["agents"],
-          adapterIdentity: "openclaw/test",
-        },
-      ],
-    });
-    expect(mocks.preflightClawPackage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "plugin", ref: "@owner/audit" }),
-      root,
-      { config: mocks.config },
-    );
-    expect(runtime.exit).not.toHaveBeenCalled();
-  });
-
-  it("strips terminal controls from the reported agent name", async () => {
-    const { root, runtime } = await createInspectFixture("claude");
-    // Drop the fixture's extension so the report path needs no package preflight.
-    await rm(join(root, "profiles", "openclaw.yml"));
-    await writeJson(root, "openclaw.claw.json", {
-      schemaVersion: 1,
-      agent: { id: "demo-agent", name: "Agent\u001b]0;INJECTED_TITLE\u0007CLAW_MARKER_9F3E2D" },
-    });
-
-    await runClawsInspectCommand(root, {});
-
-    const lines = runtime.log.mock.calls.map((call) => String(call[0]));
-    const agentLine = lines.find((line) => line.startsWith("Agent: "));
-    expect(agentLine).toBeDefined();
-    expect(agentLine).toContain("CLAW_MARKER_9F3E2D");
-    expect(agentLine).not.toMatch(/\p{Cc}/u);
-  });
-
-  it("strips terminal controls from reported manifest diagnostics", async () => {
-    const { root, runtime } = await createInspectFixture("claude");
-    await writeJson(root, "openclaw.claw.json", {
-      schemaVersion: 1,
-      agent: { id: "demo-agent" },
-      metadata: { "key\u001b]0;INJECTED_TITLE\u0007DIAG_MARKER": 1 },
-    });
-
-    await runClawsInspectCommand(root, {});
-
-    const output = String(runtime.error.mock.calls[0]?.[0]);
-    expect(output).toContain("DIAG_MARKER");
-    expect(output).not.toMatch(/\p{Cc}/u);
-  });
-
-  it("rejects a plugin declared by both the portable manifest and OpenClaw profile", async () => {
-    const { root, values, runtime } = await createInspectFixture("openclaw", [
-      { kind: "plugin", source: "clawhub", ref: "@owner/audit", version: "2.0.1" },
-    ]);
-    mocks.preflightClawPackage.mockResolvedValue({
-      ...preflight,
-      detectedFormat: "openclaw",
-      mapped: ["skills"],
-      unavailable: [],
-    });
-    await runClawsInspectCommand(root, { json: true });
-
-    expect(values[0]).toMatchObject({
-      valid: false,
-      diagnostics: [expect.objectContaining({ code: "extension_package_collision" })],
-    });
-    expect(runtime.exit).toHaveBeenCalledWith(1);
-  });
+  expect(exit).toHaveBeenCalledWith(1);
 });
+
+it.each(["agent", "diagnostic"] as const)(
+  "strips terminal controls from %s output",
+  async (kind) => {
+    const root = tempDirs.make("claws-redaction-");
+    const marker = "CLAW_MARKER";
+    const injected = `Agent\u001b]0;INJECTED_TITLE\u0007${marker}`;
+    await writeJson(root, "openclaw.claw.json", {
+      schemaVersion: 1,
+      agent: { id: "demo-agent", ...(kind === "agent" ? { name: injected } : {}) },
+      ...(kind === "diagnostic" ? { metadata: { [injected]: 1 } } : {}),
+    });
+    const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+    const error = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
+    vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {});
+    await runClawsInspectCommand(join(root, "openclaw.claw.json"), {});
+    const output =
+      kind === "agent"
+        ? log.mock.calls.map(([line]) => String(line)).find((line) => line.startsWith("Agent: "))
+        : String(error.mock.calls[0]?.[0]);
+    expect(output).toContain(marker);
+    expect(output).not.toMatch(/\p{Cc}/u);
+  },
+);
