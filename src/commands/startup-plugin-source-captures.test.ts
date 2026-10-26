@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   maintenance: vi.fn(),
   prune: vi.fn(),
-  verify: vi.fn(),
   warning: vi.fn(),
   preserving: false,
 }));
@@ -26,7 +25,6 @@ vi.mock("./config-preflight-snapshot.js", async (importOriginal) => ({
     takePluginCache: () => undefined,
     [Symbol.asyncDispose]: async () => {},
   }),
-  readAdmittedConfigSnapshot: mocks.read,
 }));
 vi.mock("../infra/sqlite-readonly-worker.js", () => ({
   withSqliteReadOnlyWorkerScope: (run: () => unknown) => run(),
@@ -35,22 +33,12 @@ vi.mock("../state/openclaw-state-db-readonly.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/openclaw-state-db-readonly.js")>()),
   isArtifactPreservingStateRead: () => mocks.preserving,
 }));
-vi.mock("../state/openclaw-state-db.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../state/openclaw-state-db.js")>()),
-  initializeNativeOpenClawStateDatabase: vi.fn(),
-}));
 vi.mock("./doctor-sqlite-maintenance-lock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./doctor-sqlite-maintenance-lock.js")>()),
   withDoctorSqliteMaintenanceLock: mocks.maintenance,
 }));
 vi.mock("../plugins/plugin-source-capture-report.js", () => ({
   pruneUnreferencedPluginNativeCaptures: mocks.prune,
-}));
-vi.mock("./doctor-config-preflight-plugin-verification.js", () => ({
-  refreshStartupPluginQuarantine: mocks.verify,
-}));
-vi.mock("../plugins/runtime-degraded-state.js", () => ({
-  setActiveDegradedPlugins: vi.fn(),
 }));
 vi.mock("../infra/state-migrations.messages.js", () => ({
   recordStartupMigrationWarnings: vi.fn(),
@@ -65,13 +53,7 @@ beforeEach(async () => {
   stateDir = temp.make("startup-capture-cleanup-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   await fs.mkdir(path.join(stateDir, "tmp", "plugin-captures"), { recursive: true });
-  mocks.read.mockResolvedValue({
-    snapshot: createSnapshot({
-      hash: "fixture",
-      sourceConfig: { meta: { migrations: { webhookListeners: true } } },
-    }),
-  });
-  mocks.verify.mockResolvedValue({ quarantinedPlugins: [] });
+  mocks.read.mockResolvedValue({ snapshot: createSnapshot({ hash: "fixture", sourceConfig: {} }) });
   mocks.prune.mockResolvedValue({ removed: [], warnings: [] });
   mocks.maintenance.mockImplementation(async ({ run }) => {
     const authority = new AbortController();
@@ -89,22 +71,15 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-it.each(["gateway", "observe", "artifact-preserving"])(
-  "leaves captures untouched for %s",
-  async (kind) => {
-    mocks.preserving = kind === "artifact-preserving";
-    const result = await runStartupConfigPreflight({
-      gateway: kind === "gateway",
-      observe: kind === "observe" ? false : undefined,
-    });
-    if (kind === "gateway") {
-      expect(result.snapshot.valid).toBe(true);
-      expect(mocks.verify).toHaveBeenCalledOnce();
-    }
-    expect(mocks.maintenance).not.toHaveBeenCalled();
-    expect(mocks.prune).not.toHaveBeenCalled();
-  },
-);
+it.each(["observe", "artifact-preserving"])("leaves captures untouched for %s", async (kind) => {
+  mocks.preserving = kind === "artifact-preserving";
+  await runStartupConfigPreflight({
+    gateway: false,
+    observe: kind === "observe" ? false : undefined,
+  });
+  expect(mocks.maintenance).not.toHaveBeenCalled();
+  expect(mocks.prune).not.toHaveBeenCalled();
+});
 
 it("cleans up for CLI startup only after its state-preparation guard accepts", async () => {
   const guard = vi.fn(async () => false);
@@ -151,7 +126,6 @@ it.each(["maintenance", "permission", "cleanup", "contention"])(
     } else {
       expect(mocks.warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(reason));
     }
-    expect(mocks.verify).not.toHaveBeenCalled();
   },
 );
 

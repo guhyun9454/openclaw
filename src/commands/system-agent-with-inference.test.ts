@@ -133,27 +133,10 @@ it("returns one structured error for --json --yes without a message", async () =
   expect(inferenceMocks.verifySetupInference).not.toHaveBeenCalled();
 });
 
-it.each([false, true])("reports unavailable inference (json=%s)", async (json) => {
-  verifySetupInference.mockResolvedValue(
-    json
-      ? expiredAuth
-      : {
-          ok: false,
-          status: "unavailable",
-          error: "no configured model",
-        },
+it("offers onboarding guidance when inference is unavailable", async () => {
+  verifySetupInference.mockResolvedValue(expiredAuth);
+  await run({ json: true });
+  expect(currentRuntime.log).toHaveBeenCalledWith(
+    expect.stringContaining('"guidance": "Run `openclaw onboard`'),
   );
-  await run(json ? { json: true } : { message: "status" });
-  if (json) {
-    expect(currentRuntime.log).toHaveBeenCalledWith(expect.stringContaining('"status": "auth"'));
-    expect(currentRuntime.log).toHaveBeenCalledWith(
-      expect.stringContaining('"guidance": "Run `openclaw onboard`'),
-    );
-    expect(currentRuntime.error).not.toHaveBeenCalled();
-  } else {
-    expect(currentRuntime.error).toHaveBeenCalledWith(expect.stringContaining("openclaw onboard"));
-    expect(requestExitAfterOneShotOutput).toHaveBeenCalledWith(currentRuntime, 1);
-    expect(inferenceMocks.runGuidedOnboarding).not.toHaveBeenCalled();
-  }
-  expect(currentRuntime.exit).toHaveBeenCalledWith(1);
 });

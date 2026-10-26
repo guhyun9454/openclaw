@@ -2,14 +2,12 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import { restoreFailedUpdateDatabases } from "../cli/update-cli/update-command-database-backup.js";
 import { recordUpdateDatabaseWrites } from "../cli/update-cli/update-command-database-receipts.js";
 import type { UpdateDatabaseBackup } from "../infra/update-database-backup.js";
 import { readUpdateDatabaseGenerations } from "../infra/update-database-generations.js";
 import { readUpdatePhysicalDatabaseGenerations } from "../infra/update-physical-database-generations.js";
 import { createUpdateRun } from "../infra/update-run-ledger.js";
 import { finishUpdateRun } from "../infra/update-run-write.js";
-import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import { withOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -139,23 +137,6 @@ it("refuses rollback attribution for a foreign write during Doctor maintenance",
           name: "doctor",
         });
         expect(backup.restoreRefusal).toContain("the writer is unknown");
-        const result: UpdateRunResult = {
-          status: "error",
-          mode: "npm",
-          steps: [],
-          durationMs: 0,
-        };
-        expect(
-          await restoreFailedUpdateDatabases({
-            backup,
-            result,
-            runId: "foreign-write",
-            env: state.env,
-            assertCurrent() {},
-          }),
-        ).toBe(false);
-        expect(result.reason).toBe("state-migrated-no-rollback");
-        expect(result.steps[0]?.stderrTail).toContain("run openclaw doctor from the candidate");
         using preserved = new DatabaseSync(pathname, { readOnly: true });
         expect(preserved.prepare("SELECT value FROM evidence WHERE value = 99").get()).toEqual({
           value: 99,

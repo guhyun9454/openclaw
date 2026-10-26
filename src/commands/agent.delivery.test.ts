@@ -1,29 +1,23 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { deliverAgentCommandResult } from "../agents/command/delivery.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
-import type { SessionEntry } from "../config/sessions.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
-import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { createTestRuntime } from "./test-runtime-config-helpers.js";
 
 const mocks = vi.hoisted(() => ({
   deliverOutboundPayloads: vi.fn(async (_params: DeliveryCall) => []),
   getChannelPlugin: vi.fn(() => ({ outbound: { deliveryMode: "gateway" } })),
-  resolveOutboundTarget: vi.fn((_params: ResolveTargetCall) => ({
-    ok: true as const,
-    to: "+15551234567",
-  })),
+  resolveOutboundTarget: vi.fn(
+    (_params: { channel?: string; to?: string; accountId?: string }) => ({
+      ok: true as const,
+      to: "+15551234567",
+    }),
+  ),
 }));
 
 type DeliveryCall = {
   session?: { agentId?: string; key?: string };
-};
-
-type ResolveTargetCall = {
-  accountId?: string;
-  channel?: string;
-  to?: string;
 };
 
 function onlyCall<T>(mock: { mock: { calls: [T][] } }): T {
@@ -52,18 +46,10 @@ vi.mock("../infra/outbound/targets.js", async () => {
   };
 });
 
-function sessionEntry(context: DeliveryContext): SessionEntry {
-  return {
-    sessionId: "fixture",
-    updatedAt: 1,
-    delivery: normalizeSessionDeliveryState({ context }),
-  };
-}
-
 async function runDelivery(params: {
   opts?: Partial<Parameters<typeof deliverAgentCommandResult>[0]["opts"]>;
   outboundSession?: { key?: string; agentId?: string };
-  sessionEntry?: SessionEntry;
+  sessionEntry?: Parameters<typeof deliverAgentCommandResult>[0]["sessionEntry"];
   runtime?: RuntimeEnv;
   resultText?: string;
   payloads?: ReplyPayload[];
@@ -96,39 +82,36 @@ it("stays silent for intentional empty payloads", async () => {
 });
 
 it.each([
-  ["uses turn source over stale session route", "+15559876543", "work"],
-  ["ignores stale lastTo without currentChannelId", undefined, undefined],
-])("%s", async (_label, to, accountId) => {
-  await runDelivery({
-    opts: {
-      deliver: true,
-      runContext: {
-        messageChannel: "whatsapp",
-        currentChannelId: to,
-        accountId,
+  ["+15559876543", "work"],
+  [undefined, undefined],
+])(
+  "uses turn destination %s and caller session instead of stale session routing",
+  async (to, accountId) => {
+    const outboundSession = { key: "agent:exec:hook:gmail:thread-1", agentId: "exec" };
+    await runDelivery({
+      opts: {
+        deliver: true,
+        runContext: { messageChannel: "whatsapp", currentChannelId: to, accountId },
       },
-    },
-    sessionEntry: sessionEntry({ channel: "slack", to: "U_WRONG", accountId: "wrong" }),
-  });
-
-  expect(onlyCall(mocks.resolveOutboundTarget)).toMatchObject({
-    channel: "whatsapp",
-    to,
-    ...(accountId ? { accountId } : {}),
-  });
-});
-
-it("uses caller-provided outbound session context when opts.sessionKey is absent", async () => {
-  await runDelivery({
-    opts: { deliver: true, channel: "whatsapp", to: "+15551234567" },
-    outboundSession: { key: "agent:exec:hook:gmail:thread-1", agentId: "exec" },
-  });
-
-  expect(onlyCall(mocks.deliverOutboundPayloads).session).toMatchObject({
-    key: "agent:exec:hook:gmail:thread-1",
-    agentId: "exec",
-  });
-});
+      outboundSession,
+      sessionEntry: {
+        sessionId: "fixture",
+        updatedAt: 1,
+        delivery: normalizeSessionDeliveryState({
+          context: { channel: "slack", to: "U_WRONG", accountId: "wrong" },
+        }),
+      },
+    });
+    expect(mocks.resolveOutboundTarget).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        channel: "whatsapp",
+        to,
+        ...(accountId ? { accountId } : {}),
+      }),
+    );
+    expect(onlyCall(mocks.deliverOutboundPayloads).session).toMatchObject(outboundSession);
+  },
+);
 
 it.each(["nested", "nested:agent:main:child"])(
   "retains %s replies without logging them",

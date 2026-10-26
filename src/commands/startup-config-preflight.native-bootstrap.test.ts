@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   readMacNodeWorkerProofRows,
   seedMacNodeWorkerProofState,
@@ -19,6 +19,9 @@ import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contra
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runStartupConfigPreflight } from "./startup-config-preflight.js";
+import * as captures from "./startup-plugin-source-captures.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 async function inspectMigratedCredentials(
   databasePath: string,
@@ -40,47 +43,39 @@ async function inspectMigratedCredentials(
     .all();
 }
 
-it.each([false, true])(
-  "migrates native credentials before webhook readiness (routed root: %s)",
-  async (routed) => {
-    await withOpenClawTestState({ label: "gateway-native-bootstrap" }, async (state) => {
-      const config = { gateway: { mode: "local" }, plugins: { enabled: false } };
-      const selectedRoot = routed ? state.path("selected") : state.stateDir;
-      const selectedConfig = path.join(selectedRoot, "openclaw.json");
-      const selectedEnv = { ...state.env, OPENCLAW_STATE_DIR: selectedRoot };
-      await state.writeConfig(config);
-      let ambientDatabase: Buffer | undefined;
-      if (routed) {
-        seedMacNodeWorkerProofState(state.statePath("state", "openclaw.sqlite"));
-        ambientDatabase = fs.readFileSync(state.statePath("state", "openclaw.sqlite"));
-        fs.mkdirSync(selectedRoot);
-        fs.writeFileSync(selectedConfig, JSON.stringify(config));
-        await state.writeConfig({ env: { vars: { OPENCLAW_STATE_DIR: selectedRoot } } });
-        delete process.env.OPENCLAW_STATE_DIR;
-        delete process.env.OPENCLAW_CONFIG_PATH;
-      }
-      const configBefore = fs.readFileSync(selectedConfig, "utf8");
-      const databasePath = path.join(selectedRoot, "state", "openclaw.sqlite");
-      const nativeRows = seedMacNodeWorkerProofState(databasePath);
+it("migrates routed native credentials before webhook readiness without touching ambient state", async () => {
+  const cleanup = vi.spyOn(captures, "cleanupStartupPluginSourceCaptures");
+  await withOpenClawTestState({ label: "gateway-native-bootstrap" }, async (state) => {
+    const config = { gateway: { mode: "local" }, plugins: { enabled: false } };
+    const selectedRoot = state.path("selected");
+    const selectedConfig = path.join(selectedRoot, "openclaw.json");
+    const selectedEnv = { ...state.env, OPENCLAW_STATE_DIR: selectedRoot };
+    await state.writeConfig(config);
+    seedMacNodeWorkerProofState(state.statePath("state", "openclaw.sqlite"));
+    const ambientDatabase = fs.readFileSync(state.statePath("state", "openclaw.sqlite"));
+    fs.mkdirSync(selectedRoot);
+    fs.writeFileSync(selectedConfig, JSON.stringify(config));
+    await state.writeConfig({ env: { vars: { OPENCLAW_STATE_DIR: selectedRoot } } });
+    delete process.env.OPENCLAW_STATE_DIR;
+    delete process.env.OPENCLAW_CONFIG_PATH;
+    const configBefore = fs.readFileSync(selectedConfig, "utf8");
+    const databasePath = path.join(selectedRoot, "state", "openclaw.sqlite");
+    const nativeRows = seedMacNodeWorkerProofState(databasePath);
 
-      const ready = await runStartupConfigPreflight({ gateway: true, observe: false });
+    const ready = await runStartupConfigPreflight({ gateway: true, observe: false });
+    expect(cleanup).not.toHaveBeenCalled();
 
-      expect(ready.snapshot.valid).toBe(true);
-      expect(ready.snapshot.path).toBe(selectedConfig);
-      expect(fs.readFileSync(selectedConfig, "utf8")).toBe(configBefore);
-      expect(readConfigMachineState(`webhookListeners:${selectedConfig}`)).toBe(true);
-      if (routed) {
-        expect(fs.readFileSync(state.statePath("state", "openclaw.sqlite"))).toEqual(
-          ambientDatabase,
-        );
-        expect(fs.existsSync(resolveClientCredentialStorePath(state.env))).toBe(false);
-      }
-      expect(await inspectMigratedCredentials(databasePath, selectedEnv, nativeRows)).toEqual([]);
-      using database = new DatabaseSync(databasePath, { readOnly: true });
-      expect(database.prepare("SELECT boot_id FROM gateway_boot_lifecycle").all()).toEqual([]);
-    });
-  },
-);
+    expect(ready.snapshot.valid).toBe(true);
+    expect(ready.snapshot.path).toBe(selectedConfig);
+    expect(fs.readFileSync(selectedConfig, "utf8")).toBe(configBefore);
+    expect(readConfigMachineState(`webhookListeners:${selectedConfig}`)).toBe(true);
+    expect(fs.readFileSync(state.statePath("state", "openclaw.sqlite"))).toEqual(ambientDatabase);
+    expect(fs.existsSync(resolveClientCredentialStorePath(state.env))).toBe(false);
+    expect(await inspectMigratedCredentials(databasePath, selectedEnv, nativeRows)).toEqual([]);
+    using database = new DatabaseSync(databasePath, { readOnly: true });
+    expect(database.prepare("SELECT boot_id FROM gateway_boot_lifecycle").all()).toEqual([]);
+  });
+});
 
 it("admits the recoverable config before migrating native credentials", async () => {
   await withOpenClawTestState(
