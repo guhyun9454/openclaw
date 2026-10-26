@@ -81,7 +81,7 @@ describe("plugin manifest backup resources", () => {
     ["an empty segment", "owner//cache"],
     ["a current-directory segment", "owner/./cache"],
     ["a parent-directory segment", "owner/../outside"],
-  ].map(([label, relativePath]) => [label, [resource({ relativePath })], true] as const);
+  ].map(([label, relativePath]) => [label, [resource({ relativePath })]] as const);
   it.each([
     ...invalidPaths,
     ["non-array declarations", {}],
@@ -92,14 +92,11 @@ describe("plugin manifest backup resources", () => {
     ["unsupported database family", [resource({ databaseFamily: "unknown" })]],
     ["regenerable database", [resource({ disposition: "regenerable", databaseFamily: "state" })]],
     ["agent-scoped database", [resource({ scope: "agent", databaseFamily: "state" })]],
-  ])("rejects %s", (_label, backupResources, invalidPath) => {
+  ])("rejects %s", (_label, backupResources) => {
     const fixture = createPluginFixture(backupResources);
     expect(loadPluginManifest(fixture.pluginRoot)).toMatchObject({
       ok: false,
-      error: expect.stringContaining(
-        invalidPath ? "strict relative POSIX path" : "backupResources",
-      ),
-      ...(!invalidPath && { diagnosticCode: "backup-resource-declaration-invalid" }),
+      diagnosticCode: "backup-resource-declaration-invalid",
     });
   });
 

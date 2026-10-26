@@ -53,11 +53,7 @@ describe("before_agent_reply runner boundary", () => {
         }),
       );
       try {
-        await awaitGateBeforeSettlement(
-          entered.promise,
-          pending,
-          "Reply hook bypassed attribution",
-        );
+        await awaitGateBeforeSettlement(entered.promise, pending, "attribution bypass");
         expect(beforeDispatch).not.toHaveBeenCalled();
         expect(hookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
         const error = outcome === "failed" ? "attribution failed" : "reply authority ended";

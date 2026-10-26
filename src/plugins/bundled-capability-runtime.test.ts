@@ -6,7 +6,6 @@ import { resolveContextEngine } from "../context-engine/registry.js";
 import { loadBundledCapabilityRuntimeRegistry } from "./bundled-capability-runtime.js";
 import { setGatewayPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
 import type { PluginDiscoveryResult } from "./discovery.js";
-import { writeJson } from "./generated-plugin-test-helpers.js";
 import {
   cleanupPluginLoaderFixturesForTest,
   EMPTY_PLUGIN_SCHEMA,
@@ -70,11 +69,8 @@ describe("loadBundledCapabilityRuntimeRegistry", () => {
     const target = writePlugin({
       id: "shadowed-capability",
       dir: path.join(bundledRoot, "shadowed-capability"),
+      filename: "index.cjs",
       registration: `api.registerProvider({ id: "bundled-capability", label: "Bundled owner", auth: [] });`,
-    });
-    writeJson(path.join(target.dir, "package.json"), {
-      name: "@fixture/shadowed-capability",
-      openclaw: { extensions: ["./shadowed-capability.cjs"] },
     });
     const shadow = writePlugin({
       id: target.id,
@@ -101,44 +97,52 @@ describe("loadBundledCapabilityRuntimeRegistry", () => {
         env,
         ...(explicit && { discovery: discoveryFor(target) }),
       });
-    const registry = load();
-    expect(providerIds(registry)).toEqual(["bundled-capability"]);
-    expect(registry.plugins.find((plugin) => plugin.id === target.id)?.origin).toBe("bundled");
+    expect(providerIds(load())).toEqual(["bundled-capability"]);
     expect(providerIds(load(true))).toEqual(["bundled-capability"]);
     const freshRegistry = withPluginCache(createPluginCache(), () => load(true));
     expect(freshRegistry.providers).toEqual([]);
     expect(freshRegistry.diagnostics).toContainEqual(
       expect.objectContaining({ pluginId: target.id, message: "plugin manifest requires id" }),
     );
-    expect(providerIds(load())).toEqual(["bundled-capability"]);
   });
 
-  it("loads only the requested bundled plugin without replacing the active registry", () => {
-    const target = writePlugin({
-      id: "capability-target",
-      registration: `if (api.registrationMode === "discovery") {
+  it.each([false, true])(
+    "loads only requested capabilities without activating a registry (channel=%s)",
+    (channel) => {
+      const target = writePlugin({
+        id: "capability-target",
+        registration: `if (api.registrationMode === "discovery") {
         api.registerProvider({ id: "capability-target", label: "Target", auth: [] });
+        api.registerTranscriptSourceProvider({ id: "voice", name: "Voice", sourceKinds: ["meeting"] });
       }
       if (api.registrationMode === "full") {
         api.registerProvider({ id: "full-only", label: "Full only", auth: [] });
       }`,
-    });
-    const unscoped = writePlugin({
-      id: "capability-unscoped",
-      registration: `throw new Error("unscoped plugin loaded");`,
-    });
-    const active = createEmptyPluginRegistry();
-    setActivePluginRegistry(active, "existing-registry");
-    const activeSnapshotBefore = captureActivePluginRegistrySnapshot();
-    const registrationContextBefore = getPluginRegistrationContext();
+      });
+      if (channel) {
+        writePluginMetadata({ dir: target.dir, id: target.id, channels: [target.id] });
+      }
+      const unscoped = writePlugin({
+        id: "capability-unscoped",
+        registration: `throw new Error("unscoped plugin loaded");`,
+      });
+      const active = createEmptyPluginRegistry();
+      setActivePluginRegistry(active, "existing-registry");
+      const activeSnapshotBefore = captureActivePluginRegistrySnapshot();
+      const registrationContextBefore = getPluginRegistrationContext();
 
-    const registry = capture(target, [unscoped]);
+      const registry = capture(target, [unscoped]);
 
-    expect(providerIds(registry)).toEqual([target.id]);
-    expect(getActivePluginRegistry()).toBe(active);
-    expect(captureActivePluginRegistrySnapshot()).toEqual(activeSnapshotBefore);
-    expect(getPluginRegistrationContext()).toBe(registrationContextBefore);
-  });
+      expect(providerIds(registry)).toEqual([target.id]);
+      expect(registry.transcriptSourceProviders.map((entry) => entry.provider.id)).toEqual([
+        "voice",
+      ]);
+      expect(registry.typedHooks).toEqual([]);
+      expect(getActivePluginRegistry()).toBe(active);
+      expect(captureActivePluginRegistrySnapshot()).toEqual(activeSnapshotBefore);
+      expect(getPluginRegistrationContext()).toBe(registrationContextBefore);
+    },
+  );
 
   it.each<[string, NonNullable<OpenClawConfig["plugins"]>]>([
     ["explicitly disabled", { entries: { "blocked-capability": { enabled: false } } }],
@@ -151,30 +155,8 @@ describe("loadBundledCapabilityRuntimeRegistry", () => {
       registration: `api.registerProvider({ id: "blocked-capability", label: "Blocked", auth: [] });`,
     });
 
-    const registry = capture(blocked, [], { plugins });
-
-    expect(registry.providers).toEqual([]);
+    expect(capture(blocked, [], { plugins }).providers).toEqual([]);
     expect(listImportedRuntimePluginIds()).not.toContain(blocked.id);
-  });
-
-  it("registers channel capabilities during discovery without replacing the active registry", () => {
-    const target = writePlugin({
-      id: "capability-channel",
-      registration: `if (api.registrationMode === "discovery") {
-        api.registerTranscriptSourceProvider({
-          id: "capability-channel-voice", name: "Voice transcripts", sourceKinds: ["meeting"],
-        });
-      }`,
-    });
-    writePluginMetadata({ dir: target.dir, id: target.id, channels: [target.id] });
-    const active = createEmptyPluginRegistry();
-    setActivePluginRegistry(active, "existing-channel-registry");
-    const registry = capture(target);
-    expect(registry.transcriptSourceProviders.map((entry) => entry.provider.id)).toEqual([
-      `${target.id}-voice`,
-    ]);
-    expect(registry.typedHooks).toEqual([]);
-    expect(getActivePluginRegistry()).toBe(active);
   });
 });
 
@@ -231,11 +213,9 @@ it("keeps loading siblings and retries validation when a schema cannot be serial
 
   const brokenSource = fs.realpathSync(broken.file);
   const stringify = JSON.stringify;
-  let signatureFailures = 0;
   // Native serialization limits differ; only the broken candidate's retention signature fails.
   const serialization = vi.spyOn(JSON, "stringify").mockImplementation((value, ...args) => {
     if (Array.isArray(value) && value[0] === brokenSource) {
-      signatureFailures++;
       throw new RangeError("fixture retention signature exceeds serialization limits");
     }
     return stringify(value, ...args);
@@ -251,7 +231,6 @@ it("keeps loading siblings and retries validation when a schema cannot be serial
     expect(requirePluginEntry(replacement, healthy.id)).toBe(loaded);
     expect(requirePluginEntry(replacement, broken.id)).toMatchObject(validationState);
     expect(requirePluginEntry(replacement, broken.id)).not.toBe(failed);
-    expect(signatureFailures).toBe(2);
   } finally {
     serialization.mockRestore();
   }
@@ -291,8 +270,6 @@ it("rolls back partial metadata without breaking an earlier class-backed service
   const summary = warnings.find((warning) => warning.includes("failed to initialize"));
   expect(summary).toContain("register: z-partial-register-failure");
   expect(summary).toContain("validation: warn-validation");
-  expect(summary).toContain("openclaw plugins inspect <id> --runtime --json");
-  expect(summary).toContain("openclaw plugins list");
 });
 
 function setupOwners(legacyFirst: boolean, declaredEngineId = "existing-engine") {

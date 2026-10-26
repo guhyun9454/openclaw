@@ -28,9 +28,7 @@ describe("session hook runner methods", () => {
   });
   function requireTranscript(context: unknown) {
     const transcript = (context as PluginHookSessionContext).endedTranscript;
-    if (!transcript?.available) {
-      throw new Error("expected ended transcript reader");
-    }
+    assert(transcript?.available, "expected ended transcript reader");
     return transcript;
   }
   function transcriptContext(
