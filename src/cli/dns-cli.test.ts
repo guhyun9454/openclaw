@@ -87,6 +87,7 @@ describe("dns-cli probe bounds", () => {
     await program.parseAsync(["node", "openclaw", "dns", "setup", "--domain", domain]);
 
     const report = String(log.mock.calls[1]?.[0]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("DNS setup"));
     expect(report).toContain("café\\nforged\\tzone\\rend.db");
     expect(report).toContain("openclaw.internal.");
     expect(report.replaceAll("\n", "")).not.toMatch(/\p{Cc}/u);

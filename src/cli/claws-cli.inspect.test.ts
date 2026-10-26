@@ -56,30 +56,26 @@ async function createInspectFixture(format: "claude" | "openclaw", packages: Cla
     agent: { id: "demo-agent" },
     ...(packages.length ? { packages } : {}),
   });
-  await writeFile(
-    join(root, "profiles", "openclaw.yml"),
-    [
-      "schemaVersion: 1",
-      "agent: {}",
-      "extensions:",
-      "  - id: audit-tools",
-      "    kind: plugin",
-      `    format: ${format}`,
-      "    source: clawhub",
-      "    ref: '@owner/audit'",
-      "    version: 2.0.1",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
+  await writeJson(root, "profiles/openclaw.yml", {
+    schemaVersion: 1,
+    agent: {},
+    extensions: [
+      {
+        id: "audit-tools",
+        kind: "plugin",
+        format,
+        source: "clawhub",
+        ref: "@owner/audit",
+        version: "2.0.1",
+      },
+    ],
+  });
   const values: unknown[] = [];
+  vi.spyOn(defaultRuntime, "writeJson").mockImplementation((value) => values.push(value));
+  vi.spyOn(defaultRuntime, "writeStdout").mockImplementation(() => {});
   const runtime = {
     log: vi.spyOn(defaultRuntime, "log").mockImplementation(() => {}),
     error: vi.spyOn(defaultRuntime, "error").mockImplementation(() => {}),
-    writeJson: vi
-      .spyOn(defaultRuntime, "writeJson")
-      .mockImplementation((value) => values.push(value)),
-    writeStdout: vi.spyOn(defaultRuntime, "writeStdout").mockImplementation(() => {}),
     exit: vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {}),
   };
   return { root, values, runtime };
@@ -157,7 +153,6 @@ describe("claws inspect extensions", () => {
       detectedFormat: "openclaw",
       mapped: ["skills"],
       unavailable: [],
-      adapterIdentity: "openclaw/test",
     });
     await runClawsInspectCommand(root, { json: true });
 

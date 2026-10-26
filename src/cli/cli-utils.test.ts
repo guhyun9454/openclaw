@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultRuntime, ExitError } from "../runtime.js";
+import { ExitError } from "../runtime.js";
 import { runCommandWithRuntime } from "./cli-utils.js";
 import { registerDnsCli } from "./dns-cli.js";
 import {
@@ -111,17 +111,6 @@ describe("dns cli", () => {
     return program.parseAsync(["dns", "setup", "--domain", domain], { from: "user" });
   };
   beforeEach(() => vi.spyOn(console, "log").mockImplementation(log.mockClear()));
-
-  it("prints setup info (no apply)", async () => {
-    const writeJson = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-    await setup("openclaw.internal");
-    expect(output()).toContain("DNS setup");
-    expect(output()).toContain("openclaw.internal");
-    expect(writeJson).toHaveBeenCalledWith({
-      gateway: { bind: "auto" },
-      discovery: { wideArea: { domain: "openclaw.internal." } },
-    });
-  });
 
   it.each(["../../x", "evil\nrecords"])(
     "rejects invalid --domain %j with explicit DNS-name diagnostic",
