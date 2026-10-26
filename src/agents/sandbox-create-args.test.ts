@@ -85,6 +85,7 @@ describe("buildSandboxCreateArgs", () => {
       memory: "512m",
       memorySwap: 1024,
       cpus: 1.5,
+      gpus: "device=GPU-123",
       ulimits: {
         nofile: { soft: 1024, hard: 2048 },
         nproc: 128,
@@ -128,17 +129,12 @@ describe("buildSandboxCreateArgs", () => {
       "--memory": ["512m"],
       "--memory-swap": ["1024"],
       "--cpus": ["1.5"],
+      "--gpus": ["device=GPU-123"],
       "--ulimit": ["nofile=1024:2048", "nproc=128", "core=0"],
     });
     expect(args).toContain("--read-only");
     expect(args).not.toContain("--env");
     expect(env).toEqual({ LANG: "C.UTF-8", OPENCLAW_CLI: "1" });
-  });
-
-  it("emits Docker GPU passthrough as a separate argument", () => {
-    const { argv: args } = build(createSandboxConfig({ gpus: "device=GPU-123" }));
-
-    expectFlags(args, { "--gpus": ["device=GPU-123"] });
   });
 
   const bindOverrides = [
@@ -155,10 +151,8 @@ describe("buildSandboxCreateArgs", () => {
       error: /reserved container path/,
     },
   ] as const;
-  it.each(bindOverrides)("blocks binds without $key", ({ bind, roots, error }) => {
+  it.each(bindOverrides)("requires $key for the bind override", ({ key, bind, roots, error }) => {
     expect(() => build(createSandboxConfig({}, [bind]), roots && [...roots])).toThrow(error);
-  });
-  it.each(bindOverrides)("allows binds with $key", ({ key, bind, roots }) => {
     const cfg = createSandboxConfig({ [key]: true }, [bind]);
     expect(() => build(cfg, roots && [...roots])).not.toThrow();
   });

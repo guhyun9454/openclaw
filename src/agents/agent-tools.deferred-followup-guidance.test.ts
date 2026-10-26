@@ -93,17 +93,13 @@ it("inserts history guidance before the preserved session URL", () => {
 });
 
 it("names authorized conversation lookup", () => {
-  expect(
-    describeFirst(
-      expectDefined(
-        createHostedConversationTools(undefined, "main", {}).find(
-          (entry) => entry.name === "conversations_send",
-        ),
-        "conversation send tool",
-      ),
-      ["conversations_list"],
-    ).description,
-  ).toBe(
+  const send = expectDefined(
+    createHostedConversationTools(undefined, "main", {}).find(
+      (t) => t.name === "conversations_send",
+    ),
+    "conversation send tool",
+  );
+  expect(describeFirst(send, ["conversations_list"]).description).toBe(
     "Send directly through a conversationRef from conversations_list. This performs channel delivery; it does not run the local agent in the backing session.",
   );
 });

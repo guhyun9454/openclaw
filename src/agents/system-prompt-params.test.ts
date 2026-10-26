@@ -11,7 +11,7 @@ type Params = Parameters<typeof buildSystemPromptParams>[0];
 const buildParams = (params: Partial<Params> = {}) =>
   buildSystemPromptParams({ runtime, ...params }).runtimeInfo;
 const share = (sessionId: string) => ({ id: "a".repeat(48), sessionId, createdAt: 1 });
-function sessionParams(params: Partial<Params> = {}) {
+function sessionParams(params: Partial<Params> = {}, session: Partial<Params["runtime"]> = {}) {
   return buildParams({
     config: { gateway: { publicOrigin: "https://gateway.example" } },
     agentId: "main",
@@ -24,6 +24,7 @@ function sessionParams(params: Partial<Params> = {}) {
       ...runtime,
       sessionId: "public-session",
       sessionKey: "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef",
+      ...session,
     },
     ...params,
   });
@@ -146,26 +147,22 @@ describe("buildSystemPromptParams", () => {
 
   it.each(["private", "mismatched"])("omits %s session links from Runtime", (state) => {
     expect(
-      sessionParams({
-        preparedSessionEntry: {
-          sessionId: "session-1",
-          updatedAt: 1,
-          publicShare: state === "private" ? undefined : share("older-session"),
+      sessionParams(
+        {
+          preparedSessionEntry: {
+            sessionId: "session-1",
+            updatedAt: 1,
+            publicShare: state === "private" ? undefined : share("older-session"),
+          },
         },
-        runtime: { ...runtime, sessionKey: "agent:main:main", sessionId: "session-1" },
-      }).sessionUrl,
+        { sessionKey: "agent:main:main", sessionId: "session-1" },
+      ).sessionUrl,
     ).toBeUndefined();
   });
 
   it("omits oversized current session URLs from model context", () => {
     expect(
-      sessionParams({
-        runtime: {
-          ...runtime,
-          sessionId: "public-session",
-          sessionKey: `agent:main:dashboard:${"a".repeat(512)}`,
-        },
-      }).sessionUrl,
+      sessionParams({}, { sessionKey: `agent:main:dashboard:${"a".repeat(512)}` }).sessionUrl,
     ).toBeUndefined();
   });
 });

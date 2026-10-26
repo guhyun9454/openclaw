@@ -1,5 +1,3 @@
-// Verifies the read-only OpenClaw gateway tool schema and config reads.
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REDACTED_SENTINEL, redactConfigSnapshot } from "../config/redact-snapshot.js";
 import { makeSnapshot } from "../config/redact-snapshot.test-helpers.js";
@@ -54,10 +52,6 @@ describe("gateway tool", () => {
       action: "config.get",
       path: "gateway",
     });
-    const text = expectDefined(
-      direct.content.find((part) => part.type === "text"),
-      "config JSON content",
-    );
     const expected = {
       ok: true,
       result: {
@@ -66,7 +60,8 @@ describe("gateway tool", () => {
         config: { port: 19_001, auth: { token: REDACTED_SENTINEL } },
       },
     };
-    expect(JSON.parse(text.text)).toEqual(expected);
+    expect(direct.details).toEqual(expected);
+    expect(direct.content).toEqual([{ type: "text", text: JSON.stringify(expected, null, 2) }]);
     const h = createCodeModeHarness();
     applyCodeModeCatalog({ ...h.ctx, tools: [...h.tools, gateway] });
     const bridged = resultDetails(
@@ -78,34 +73,12 @@ describe("gateway tool", () => {
     expect(JSON.stringify(bridged)).not.toContain(secret);
   });
 
-  it("scopes both config.get result representations to the requested path", async () => {
-    callGatewayToolMock.mockResolvedValueOnce({
-      hash: "hash-1",
-      config: { tools: { exec: { ask: "on-miss", security: "allowlist" } } },
-    });
-    const result = await createGatewayTool().execute("call-config-get", {
-      action: "config.get",
-      path: "tools.exec",
-    });
-    const expected = {
-      ok: true,
-      result: {
-        hash: "hash-1",
-        path: "tools.exec",
-        config: { ask: "on-miss", security: "allowlist" },
-      },
-    };
-    expect(result.details).toEqual(expected);
-    expect(result.content).toEqual([{ type: "text", text: JSON.stringify(expected, null, 2) }]);
-  });
-
-  it.each([
-    ["tools.missing", "config path not found: tools.missing"],
-    ["...", "config path not found: ..."],
-    ["constructor.prototype", "config path not found: constructor.prototype"],
-  ])("rejects invalid config.get path %s", async (path, message) => {
-    await expect(readConfig(path)).rejects.toThrow(message);
-  });
+  it.each(["tools.missing", "...", "constructor.prototype"])(
+    "rejects invalid config.get path %s",
+    async (path) => {
+      await expect(readConfig(path)).rejects.toThrow(`config path not found: ${path}`);
+    },
+  );
 
   it("reads config.get paths with bracketed array indexes", async () => {
     callGatewayToolMock.mockResolvedValueOnce({
@@ -113,8 +86,7 @@ describe("gateway tool", () => {
     });
 
     const path = "agents.entries.ops.skills[0]";
-    const result = await readConfig(path);
-    expect(result.content).toEqual([
+    expect((await readConfig(path)).content).toEqual([
       {
         type: "text",
         text: JSON.stringify({ ok: true, result: { path, config: "deploy" } }, null, 2),
@@ -135,15 +107,7 @@ describe("gateway tool", () => {
   it("returns a path-scoped schema lookup result", async () => {
     const schema = {
       path: "gateway.auth",
-      hintPath: "gateway.auth",
-      children: [
-        {
-          key: "token",
-          path: "gateway.auth.token",
-          required: true,
-          hintPath: "gateway.auth.token",
-        },
-      ],
+      children: [{ key: "token", required: true }],
     };
     callGatewayToolMock.mockResolvedValueOnce(structuredClone(schema));
     const result = await readSchema("gateway.auth");
