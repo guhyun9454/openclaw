@@ -80,7 +80,13 @@ it.each([
   [undefined, undefined, 7],
   [20, 0, 0],
 ])("resolves root %s/account %s history to %s", async (root, historyLimit, expected) => {
-  const cfg = configWith({ historyLimit: root, accounts: { work: { historyLimit } } }, 7);
+  const cfg = configWith(
+    {
+      ...(root === undefined ? {} : { historyLimit: root }),
+      accounts: { work: historyLimit === undefined ? {} : { historyLimit } },
+    },
+    7,
+  );
   expect((await createDelivery(cfg, "work")()).historyLimit).toBe(expected);
 });
 it("follows a reload for a monitor the Gateway started from the process config", async () => {

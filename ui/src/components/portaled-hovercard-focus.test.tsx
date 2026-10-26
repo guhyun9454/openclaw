@@ -156,7 +156,7 @@ it.each(["copy", "markdown"] as const)("retires replaced %s controls and their o
     flush();
     expect(controls.read()).toEqual([findControl("Current")]);
   }
-  const last = findControl("Current");
+  const last = kind === "copy" ? replacement : findControl("Current");
   view.unmount();
   container.append(last);
   expect(controls.read()).toEqual([]);

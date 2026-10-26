@@ -9,7 +9,8 @@ import { lineMessageAdapter, lineOutboundAdapter } from "./outbound.js";
 import { recordLineQuoteToken } from "./quote-tokens.js";
 import { setLineRuntime } from "./runtime.js";
 
-vi.mock("openclaw/plugin-sdk/runtime-env", () => ({
+vi.mock("openclaw/plugin-sdk/runtime-env", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/runtime-env")>()),
   logVerbose: vi.fn(),
   danger: (t: string) => t,
 }));
