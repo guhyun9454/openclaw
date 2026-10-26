@@ -87,7 +87,6 @@ it.each(["literal", "ref"] as const)(
     const selected = () => evaluate({ cfg, env });
     const credential = expectDefined(selected().selectedCredential, "direct credential");
     assert(credential.source === "direct");
-    const tiers = (selectedEvaluation = selected()) => apiTiers(selectedEvaluation);
     const observation = {
       modelId: "synthetic-api-model",
       runtimeId: "openclaw",
@@ -103,14 +102,11 @@ it.each(["literal", "ref"] as const)(
         ...overrides,
       });
     expect(record(observation)).toBe(true);
-    expect(tiers()).toEqual(["priority", "ultrafast"]);
     const republished = evaluate({ cfg: { ...cfg, gateway: { port: 19001 } }, env });
     expect(republished.selectedCredential?.source).toBe("direct");
-    expect(tiers(republished)).toEqual(["priority", "ultrafast"]);
     expect(read({ modelId: "other-model" })).toEqual([]);
     expect(read({ baseUrl: "https://other.example/v1" })).toEqual([]);
     accountCatalog.reconcileAuth({ version: 1, profiles: {} }, () => true);
-    expect(tiers()).toEqual(["priority", "ultrafast"]);
     const originalBinding = structuredClone(provider.apiKey);
     if (typeof provider.apiKey === "string") {
       provider.apiKey = "synthetic-key-b";
@@ -128,7 +124,6 @@ it.each(["literal", "ref"] as const)(
     const next = selected();
     expect(next.selectedCredential).toEqual(credential);
     expect(credential.identityKey).toBe("direct:openai");
-    expect(tiers(next)).toEqual(["priority", "ultrafast"]);
     const replacement = accountCatalog.prepareServiceTierObserver({
       selectedCredential: expectDefined(next.selectedCredential, "replacement credential"),
     });

@@ -148,9 +148,7 @@ it("selects logical overrides from a legacy fallback", () => {
     return { id, key: `${entry.provider}/${id}` };
   });
 
-  const resolveOverrides = createConfiguredModelCatalogOverridesResolver({
-    cfg,
-  });
+  const resolveOverrides = createConfiguredModelCatalogOverridesResolver({ cfg });
   for (const id of ["gpt-5.5", "openai/gpt-5.5", "gpt-5.5"]) {
     expect(resolveOverrides({ ...platformEntry, id })).toEqual({
       name: "Legacy row",
