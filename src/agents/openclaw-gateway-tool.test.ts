@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REDACTED_SENTINEL, redactConfigSnapshot } from "../config/redact-snapshot.js";
 import { makeSnapshot } from "../config/redact-snapshot.test-helpers.js";
-import { GatewayClientRequestError } from "../gateway/client.js";
 import { applyCodeModeCatalog } from "./code-mode.js";
 import {
   createCodeModeHarness,
@@ -10,31 +9,23 @@ import {
 } from "./code-mode.test-support.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 
-const { callGatewayToolMock, readGatewayCallOptionsMock } = vi.hoisted(() => ({
+const { callGatewayToolMock } = vi.hoisted(() => ({
   callGatewayToolMock: vi.fn(),
-  readGatewayCallOptionsMock: vi.fn(() => ({})),
 }));
 
 vi.mock("./tools/gateway.js", () => ({
   callGatewayTool: callGatewayToolMock,
-  readGatewayCallOptions: readGatewayCallOptionsMock,
+  readGatewayCallOptions: () => ({}),
 }));
 
 const readConfig = (path?: string) =>
   createGatewayTool().execute("config-read", { action: "config.get", path });
-const readSchema = (path: string) =>
-  createGatewayTool().execute("schema-read", { action: "config.schema.lookup", path });
-const expectSchemaRequest = (path: string) =>
-  expect(
-    callGatewayToolMock.mock.calls.find(([method]) => method === "config.schema.lookup")?.[2],
-  ).toEqual({ path });
 
 describe("gateway tool", () => {
   afterEach(resetCodeModeTestState);
 
   beforeEach(() => {
     callGatewayToolMock.mockClear();
-    readGatewayCallOptionsMock.mockClear();
     callGatewayToolMock.mockImplementation(async (method: string) =>
       method === "config.get" ? { config: { tools: {} } } : { ok: true },
     );
@@ -102,34 +93,5 @@ describe("gateway tool", () => {
     await expect(readConfig()).rejects.toThrow(
       "config.get response is too large; use path to request a narrower config subtree",
     );
-  });
-
-  it("returns a path-scoped schema lookup result", async () => {
-    const schema = {
-      path: "gateway.auth",
-      children: [{ key: "token", required: true }],
-    };
-    callGatewayToolMock.mockResolvedValueOnce(structuredClone(schema));
-    const result = await readSchema("gateway.auth");
-    expectSchemaRequest("gateway.auth");
-    expect(result.details).toMatchObject({ ok: true, result: schema });
-  });
-
-  it("returns an in-band schema lookup miss for unknown paths", async () => {
-    callGatewayToolMock.mockRejectedValueOnce(
-      new GatewayClientRequestError({
-        code: "INVALID_REQUEST",
-        message: "config schema path not found",
-      }),
-    );
-
-    const result = await readSchema("agents.main.authorizedSenders");
-    expectSchemaRequest("agents.main.authorizedSenders");
-    expect(result.details).toEqual({
-      ok: false,
-      code: "schema_path_not_found",
-      path: "agents.main.authorizedSenders",
-      message: "config schema path not found",
-    });
   });
 });

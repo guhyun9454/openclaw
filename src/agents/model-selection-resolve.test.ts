@@ -27,11 +27,10 @@ function providerConfig(provider: string, id: string, baseUrl: string): OpenClaw
 function resolveAllowed(
   cfg: OpenClawConfig,
   raw: string,
-  catalog: Parameters<typeof resolveAllowedModelRefCore>[0]["catalog"] = [],
-  defaultProvider = "anthropic",
-  defaultModel?: string,
+  options: Partial<Parameters<typeof resolveAllowedModelRefCore>[0]> = {},
 ) {
-  return resolveAllowedModelRefCore({ cfg, raw, catalog, defaultProvider, defaultModel });
+  const { catalog = [], defaultProvider = "anthropic", ...rest } = options;
+  return resolveAllowedModelRefCore({ ...rest, cfg, raw, catalog, defaultProvider });
 }
 
 describe("implicit primary selection with an explicit utility model", () => {
@@ -117,13 +116,7 @@ describe("model-selection-resolve OpenRouter compat aliases", () => {
       name: model,
     }));
     const resolve = (raw: string) =>
-      resolveAllowedModelRefCore({
-        cfg,
-        catalog,
-        raw,
-        defaultProvider: "openai",
-        agentId: "worker",
-      });
+      resolveAllowed(cfg, raw, { catalog, defaultProvider: "openai", agentId: "worker" });
 
     expect(resolve("approved")).toEqual(
       agentPolicy
@@ -141,9 +134,12 @@ describe("model-selection-resolve OpenRouter compat aliases", () => {
       models: providerConfig("litellm", "cron", "http://127.0.0.1:4000/v1"),
     };
 
-    expect(resolveAllowed(cfg, "litellm/cron", [], "ollama", "qwen35-27b-researcher")).toEqual(
-      allowed({ provider: "litellm", model: "cron" }),
-    );
+    expect(
+      resolveAllowed(cfg, "litellm/cron", {
+        defaultProvider: "ollama",
+        defaultModel: "qwen35-27b-researcher",
+      }),
+    ).toEqual(allowed({ provider: "litellm", model: "cron" }));
   });
 
   it("resolves openrouter:auto through the canonical OpenRouter auto model", () => {
@@ -165,6 +161,6 @@ describe("model-selection-resolve OpenRouter compat aliases", () => {
     const cfg = modelConfig({ [`${ref.provider}/${ref.model}`]: {} });
     const catalog = [{ provider: ref.provider, id: ref.model, name: "Llama 3.3 70B Free" }];
 
-    expect(resolveAllowed(cfg, "openrouter:free", catalog)).toEqual(allowed(ref));
+    expect(resolveAllowed(cfg, "openrouter:free", { catalog })).toEqual(allowed(ref));
   });
 });

@@ -62,14 +62,19 @@ vi.mock("./mcp-app-sandbox.js", () => ({
   resolveMcpAppSandboxPort: vi.fn(),
 }));
 vi.mock("../logger.js", () => ({ logWarn: vi.fn() }));
-const catalog = fixtureCatalog("demo", [{ toolName: "show", uiResourceUri: "ui://demo/app" }]);
+const catalog = fixtureCatalog("demo", [{ toolName: "show", uiResourceUri: "ui://demo/app" }], 1);
+catalog.servers.demo!.launchSummary = "fixture";
 function runtime(privateServer: boolean): SessionMcpRuntime {
   return fixtureRuntime(() => catalog, {
     sessionKey: "agent:main:channel",
+    createdAt: 1,
+    lastUsedAt: 1,
     mcpAppsEnabled: true,
     requesterScope: { requesterSenderId: "483148469960310784", messageChannel: "discord" },
     isRequesterScopedServer: () => privateServer,
     peekCatalog: () => catalog,
+    markUsed: () => {},
+    callTool: async () => ({ content: [] }),
     acquireLease: () => () => {},
     joinCleanup: async () => {},
   });
