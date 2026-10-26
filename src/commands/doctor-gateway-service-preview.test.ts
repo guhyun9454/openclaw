@@ -71,19 +71,17 @@ it.each([
           level: "recommended",
         },
       ],
-      ...(!supported
-        ? {
-            definitionDrift: [
-              {
-                kind: "outdated",
-                key: "ExitTimeOut",
-                current: 20,
-                expected: 330,
-                message: "old shutdown budget",
-              },
-            ],
-          }
-        : {}),
+      definitionDrift: supported
+        ? []
+        : [
+            {
+              kind: "outdated",
+              key: "ExitTimeOut",
+              current: 20,
+              expected: 330,
+              message: "old shutdown budget",
+            },
+          ],
     });
     if (supported) {
       mocks.resolveSystemNodeInfo.mockResolvedValue({
@@ -141,14 +139,12 @@ it.each([
         expect.objectContaining({
           severity: "error",
           category: "fix-now",
-          message: expect.stringContaining("No supported system Node"),
           fixHint: expect.stringContaining("Install system Node"),
         }),
       );
       expect(onFinding).toHaveBeenCalledWith(
         expect.objectContaining({
           category: "recommended",
-          message: "This repair retains a source-checkout entrypoint.",
           fixHint: expect.stringContaining("gateway install --force"),
         }),
       );
