@@ -97,14 +97,16 @@ export async function performSessionGitHubAction(options: Options): Promise<void
   const assertRequester = () => {
     target.assertCurrent();
     admitted.requester.assertCurrent();
+    // Agent calls need captured operator authority, not the host's System fallback.
     if (
       !ownPublicationAction &&
       !(params.action === "ready" && params.publishingSessionKey === undefined) &&
-      !roleScopesAllow({
-        role: "operator",
-        requestedScopes: ["operator.write"],
-        allowedScopes: admitted.requester.snapshot.scopes,
-      })
+      ((caller && admitted.requester.snapshot.actor.kind !== "operator") ||
+        !roleScopesAllow({
+          role: "operator",
+          requestedScopes: ["operator.write"],
+          allowedScopes: admitted.requester.snapshot.scopes,
+        }))
     ) {
       throw new Error("GitHub pull request actions require full operator write permission.");
     }

@@ -949,8 +949,8 @@ it.each([
       } else {
         expect(JSON.stringify(offered)).toContain('"inspect"');
         expect(JSON.stringify(offered)).toContain("merge");
-        expect(rejected).toBeUndefined();
-        expect(results).toMatchObject([{ details: { gated: true } }, { details: { gated: true } }]);
+        expect(rejected).toContain("full operator write permission");
+        expect(results).toEqual([]);
       }
     }
     if (
