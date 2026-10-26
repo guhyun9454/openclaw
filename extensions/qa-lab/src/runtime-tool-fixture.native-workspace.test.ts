@@ -20,17 +20,15 @@ import {
 import { readQaScenarioFile } from "./scenario-catalog.js";
 import { createSession } from "./suite-runtime-agent-session.js";
 
-function nativeArguments(behavior: QaNativeWorkspaceBehavior, phase: "happy" | "failure") {
+function nativeReceipt(behavior: QaNativeWorkspaceBehavior, phase: "happy" | "failure") {
   const args = phase === "happy" ? behavior.happyArgs : behavior.failureArgs;
   const target = phase === "happy" ? behavior.happyMutation : behavior.failureSentinel;
-  return behavior.nativeToolName === "bash"
-    ? { command: `/bin/zsh -lc ${JSON.stringify(args.cmd)}` }
-    : { changes: [{ path: target?.path, kind: { type: "update" } }] };
-}
-
-function nativeReceipt(behavior: QaNativeWorkspaceBehavior, phase: "happy" | "failure") {
+  const input =
+    behavior.nativeToolName === "bash"
+      ? { command: `/bin/zsh -lc ${JSON.stringify(args.cmd)}` }
+      : { changes: [{ path: target?.path, kind: { type: "update" } }] };
   return [
-    transcriptToolCall(behavior.nativeToolName, phase, nativeArguments(behavior, phase)),
+    transcriptToolCall(behavior.nativeToolName, phase, input),
     transcriptToolResult(
       behavior.nativeToolName,
       phase,
@@ -126,28 +124,23 @@ describe("Codex-native workspace runtime tool fixtures", () => {
     const env = await makeEnv();
     env.gateway.runtimeEnv.OPENCLAW_QA_FORCE_RUNTIME = "codex";
     let sessionIndex = 0;
-    const requestedKeys: Array<string | undefined> = [];
-    const requestedLabels: string[] = [];
-    const createdKeys: string[] = [];
-    const nativeBehaviorIds = ["bash", "exec", "grep"] as const;
+    const sessions: { key?: string; label: string; created: string }[] = [];
     env.gateway.call = vi.fn(async (method, params) => {
       expect(method).toBe("sessions.create");
       const { label, key } = params as { label: string; key?: string };
-      requestedKeys.push(key);
-      requestedLabels.push(label);
       const phase = label.endsWith(" happy") ? "happy" : "failure";
       sessionIndex += 1;
       const sessionKey = `agent:qa:native-workspace:sequence:${sessionIndex}:${phase}`;
-      createdKeys.push(sessionKey);
+      sessions.push({ key, label, created: sessionKey });
       return { key: sessionKey };
     });
     const runAgentPrompt: RuntimeToolFixtureDeps["runAgentPrompt"] = async (_env, params) => {
-      const behaviorId = nativeBehaviorIds.find((candidate) =>
-        params.message.includes(`native-workspace-behavior=${candidate}.`),
+      const behaviorId = expectDefined(
+        (["bash", "exec", "grep"] as const).find((id) =>
+          params.message.includes(`native-workspace-behavior=${id}.`),
+        ),
+        "native workspace behavior missing from prompt",
       );
-      if (!behaviorId) {
-        throw new Error("native workspace behavior missing from prompt");
-      }
       const behavior = getQaNativeWorkspaceBehavior(behaviorId);
       const phase = params.sessionKey.endsWith(":happy") ? "happy" : "failure";
       await writeQaSessionTranscript(env, params.sessionKey, nativeReceipt(behavior, phase));
@@ -164,16 +157,12 @@ describe("Codex-native workspace runtime tool fixtures", () => {
       ).resolves.toContain(`codex-native ${behaviorId} behavior passed`);
     }
 
-    expect(requestedKeys).toEqual(Array.from({ length: 8 }, () => undefined));
-    expect(new Set(createdKeys).size).toBe(8);
-    expect(requestedLabels.slice(0, 6)).toEqual([
-      "Runtime tool fixture: bash happy",
-      "Runtime tool fixture: bash failure",
-      "Runtime tool fixture: exec happy",
-      "Runtime tool fixture: exec failure",
-      "Runtime tool fixture: grep happy",
-      "Runtime tool fixture: grep failure",
-    ]);
-    expect(requestedLabels.slice(6)).toEqual(requestedLabels.slice(0, 2));
+    expect(sessions.map(({ key }) => key)).toEqual(Array(8).fill(undefined));
+    expect(new Set(sessions.map(({ created }) => created)).size).toBe(8);
+    expect(sessions.map(({ label }) => label)).toEqual(
+      ["bash", "exec", "grep", "bash"].flatMap((id) =>
+        ["happy", "failure"].map((phase) => `Runtime tool fixture: ${id} ${phase}`),
+      ),
+    );
   });
 });

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -28,9 +29,7 @@ function promptEvent(data: Partial<typeof currentObservation> = {}, runId = "cur
 function instructionScenario() {
   const scenario = readQaScenarioById(scenarioId);
   const actions = scenario.execution.flow?.steps[0]?.actions;
-  if (!actions) {
-    throw new Error("instruction profile scenario has no actions");
-  }
+  assert.ok(actions, "instruction profile scenario has no actions");
   const config = scenario.execution.config ?? {};
   const text = (key: string) => z.string().parse(config[key]);
   return { actions, text };
@@ -72,9 +71,7 @@ async function runPromptEvidence(events: unknown[]) {
       "assert" in action &&
       JSON.stringify(action).includes("current-run provider prompt evidence mismatch"),
   );
-  if (exportIndex < 0 || assertionIndex < 0) {
-    throw new Error("instruction profile scenario has no provider prompt evidence assertion");
-  }
+  assert.ok(exportIndex >= 0 && assertionIndex >= 0, "missing provider prompt evidence assertion");
   const chars = text("instructionContents").trimEnd().length;
   const injectedWorkspaceFiles = [
     {
@@ -116,14 +113,12 @@ async function runPromptEvidence(events: unknown[]) {
   );
 }
 
-async function runNestedToolHistoryEvidence(params: { leakContextMarker?: boolean } = {}) {
+async function runNestedToolHistoryEvidence(leakContextMarker = false) {
   const { actions, text } = instructionScenario();
   const historyEvidenceAction = actions.find((action) =>
     matches(action, { call: "waitForCondition", saveAs: "historyEvidence" }),
   );
-  if (!historyEvidenceAction) {
-    throw new Error("instruction profile scenario has no history evidence wait");
-  }
+  assert.ok(historyEvidenceAction, "instruction profile scenario has no history evidence wait");
   const artifactFile = text("artifactFile"),
     nonce = text("nonce");
   const messages = [
@@ -131,7 +126,7 @@ async function runNestedToolHistoryEvidence(params: { leakContextMarker?: boolea
       toolName: "read",
       toolCallId: "read-instruction-profile-input",
       input: { path: text("inputFile") },
-      text: params.leakContextMarker ? `${nonce} ${text("contextMarker")}` : nonce,
+      text: leakContextMarker ? `${nonce} ${text("contextMarker")}` : nonce,
     }),
     nestedToolHistoryFixture({
       toolName: "write",
@@ -175,8 +170,6 @@ describe("instruction profile prompt evidence", () => {
   });
 
   it("rejects a protected marker leaked through a canonical nested receipt", async () => {
-    await expect(runNestedToolHistoryEvidence({ leakContextMarker: true })).rejects.toThrow(
-      "test condition was not met",
-    );
+    await expect(runNestedToolHistoryEvidence(true)).rejects.toThrow("test condition was not met");
   });
 });

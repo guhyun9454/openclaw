@@ -1,10 +1,11 @@
-// Qa Lab tests cover suite runtime agent media plugin behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchJsonMock = vi.hoisted(() => vi.fn());
-const patchConfigMock = vi.hoisted(() => vi.fn(async () => undefined));
+const patchConfigMock = vi.hoisted(() =>
+  vi.fn<typeof import("./suite-runtime-gateway.js").patchConfig>().mockResolvedValue(undefined),
+);
 const readConfigSnapshotMock = vi.hoisted(() =>
   vi.fn(async () => ({ hash: "hash", config: { plugins: { allow: [] as string[] } } })),
 );
@@ -28,26 +29,24 @@ import { createTempDirHarness } from "./temp-dir.test-helper.js";
 
 const { cleanup, makeTempDir } = createTempDirHarness();
 
-type PatchConfigCall = {
-  env: unknown;
-  patch: { plugins: { allow: string[] } };
-};
+const resolveImage = (tempRoot: string) =>
+  resolveGeneratedImagePath({
+    env: { mock: { baseUrl: "http://127.0.0.1:9999" }, gateway: { tempRoot } } as never,
+    promptSnippet: "prompt snippet",
+    startedAtMs: Date.now(),
+    timeoutMs: 2_000,
+  });
 
-function firstPatchConfigCall(): PatchConfigCall {
-  const calls = patchConfigMock.mock.calls as unknown as Array<[PatchConfigCall]>;
-  const call = calls[0]?.[0];
-  if (!call) {
-    throw new Error("expected patchConfig to be called");
-  }
-  return call;
-}
-
-const makeImageResolutionParams = (tempRoot: string) => ({
-  env: { mock: { baseUrl: "http://127.0.0.1:9999" }, gateway: { tempRoot } } as never,
-  promptSnippet: "prompt snippet",
-  startedAtMs: Date.now(),
-  timeoutMs: 2_000,
+const mediaRequest = (mediaPath: string, allInputText = "prompt snippet") => ({
+  allInputText,
+  toolOutput: JSON.stringify({ details: { media: { mediaUrls: [mediaPath] } } }),
 });
+async function writeImage(tempRoot: string, file: string) {
+  const mediaPath = path.join(tempRoot, file);
+  await fs.mkdir(path.dirname(mediaPath), { recursive: true });
+  await fs.writeFile(mediaPath, "png", "utf8");
+  return mediaPath;
+}
 
 afterEach(cleanup);
 
@@ -61,14 +60,12 @@ describe("qa suite runtime agent media helpers", () => {
     waitForTransportReadyMock.mockClear();
   });
 
-  it.each([
-    [
-      "attachment after invalid URLs and attachment entries",
-      '{"details":{"media":{"mediaUrls":[null," ",false],"attachments":[null,[],false,{},{"path":" /tmp/from-attachment.png "}]}}}',
-      "/tmp/from-attachment.png",
-    ],
-  ])("extracts %s from structured tool output details", (_name, text, expected) => {
-    expect(extractMediaPathFromText(text)).toBe(expected);
+  it("extracts attachments after invalid URLs and attachment entries", () => {
+    expect(
+      extractMediaPathFromText(
+        '{"details":{"media":{"mediaUrls":[null," ",false],"attachments":[null,[],false,{},{"path":" /tmp/from-attachment.png "}]}}}',
+      ),
+    ).toBe("/tmp/from-attachment.png");
   });
 
   it.each([
@@ -82,22 +79,13 @@ describe("qa suite runtime agent media helpers", () => {
 
   it("resolves generated image paths from mock request logs first", async () => {
     const tempRoot = await makeTempDir("qa-generated-image-request-");
-    const mediaPath = path.join(tempRoot, "generated.png");
-    await fs.writeFile(mediaPath, "png", "utf8");
+    const mediaPath = await writeImage(tempRoot, "generated.png");
     fetchJsonMock.mockResolvedValue([
-      {
-        allInputText: "irrelevant",
-        toolOutput: JSON.stringify({ details: { media: { mediaUrls: ["/tmp/other.png"] } } }),
-      },
-      {
-        allInputText: "prompt snippet",
-        toolOutput: JSON.stringify({ details: { media: { mediaUrls: [mediaPath] } } }),
-      },
+      mediaRequest("/tmp/other.png", "irrelevant"),
+      mediaRequest(mediaPath),
     ]);
 
-    await expect(resolveGeneratedImagePath(makeImageResolutionParams(tempRoot))).resolves.toBe(
-      mediaPath,
-    );
+    await expect(resolveImage(tempRoot)).resolves.toBe(mediaPath);
     expect(fetchJsonMock).toHaveBeenCalledOnce();
     expect(fetchJsonMock).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
     expect(fetchJsonMock.mock.calls[0]?.[1]).toBeLessThanOrEqual(2_000);
@@ -107,42 +95,25 @@ describe("qa suite runtime agent media helpers", () => {
     "ignores %s generated media paths returned by matching mock requests",
     async (artifactState) => {
       const tempRoot = await makeTempDir("qa-generated-image-invalid-request-");
-      const mediaDir = path.join(tempRoot, "state", "media", "outbound");
-      await fs.mkdir(mediaDir, { recursive: true });
-      const freshMediaPath = path.join(mediaDir, "fresh-generated.png");
-      await fs.writeFile(freshMediaPath, "fresh png", "utf8");
+      const freshMediaPath = await writeImage(tempRoot, "state/media/outbound/fresh-generated.png");
       const invalidMediaPath = path.join(tempRoot, `invalid-${artifactState}.png`);
       if (artifactState === "stale") {
-        await fs.writeFile(invalidMediaPath, "stale png", "utf8");
+        await writeImage(tempRoot, `invalid-${artifactState}.png`);
         const staleTimestamp = new Date(Date.now() - 60_000);
         await fs.utimes(invalidMediaPath, staleTimestamp, staleTimestamp);
       }
-      fetchJsonMock.mockResolvedValue([
-        {
-          allInputText: "prompt snippet",
-          toolOutput: JSON.stringify({
-            details: { media: { mediaUrls: [invalidMediaPath] } },
-          }),
-        },
-      ]);
+      fetchJsonMock.mockResolvedValue([mediaRequest(invalidMediaPath)]);
 
-      await expect(resolveGeneratedImagePath(makeImageResolutionParams(tempRoot))).resolves.toBe(
-        freshMediaPath,
-      );
+      await expect(resolveImage(tempRoot)).resolves.toBe(freshMediaPath);
     },
   );
 
   it("falls back to generated image files when mock request logs are unavailable", async () => {
     fetchJsonMock.mockRejectedValue(new Error("mock debug unavailable"));
     const tempRoot = await makeTempDir("qa-generated-image-");
-    const mediaDir = path.join(tempRoot, "state", "media", "tool-image-generation");
-    await fs.mkdir(mediaDir, { recursive: true });
-    const mediaPath = path.join(mediaDir, "generated.png");
-    await fs.writeFile(mediaPath, "png", "utf8");
+    const mediaPath = await writeImage(tempRoot, "state/media/tool-image-generation/generated.png");
 
-    await expect(resolveGeneratedImagePath(makeImageResolutionParams(tempRoot))).resolves.toBe(
-      mediaPath,
-    );
+    await expect(resolveImage(tempRoot)).resolves.toBe(mediaPath);
   });
   it("preserves plugins already allowed by the gateway when configuring media", async () => {
     readConfigSnapshotMock.mockResolvedValue({
@@ -158,13 +129,8 @@ describe("qa suite runtime agent media helpers", () => {
     } as never);
 
     expect(patchConfigMock).toHaveBeenCalledTimes(1);
-    const patchCall = firstPatchConfigCall();
-    expect(patchCall.patch.plugins.allow).toStrictEqual([
-      "memory-core",
-      "acpx",
-      "openai",
-      "anthropic",
-      "qa-channel",
-    ]);
+    expect(patchConfigMock.mock.calls[0]?.[0].patch).toMatchObject({
+      plugins: { allow: ["memory-core", "acpx", "openai", "anthropic", "qa-channel"] },
+    });
   });
 });
