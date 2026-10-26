@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { saveSubagentRegistryToSqlite } from "../../agents/subagents/registry/subagent-registry-state.fixture.test-support.js";
 import { clearSubagentRunsReadCacheForTest } from "../../agents/subagents/registry/subagent-registry-state.js";
+import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import {
   appendTranscriptMessage,
@@ -28,7 +29,7 @@ it.each(["catalog publication", "session creation"] as const)(
       const context = await createHistoryReadContext();
       const scope = { agentId: "main", sessionKey: "agent:main:created-mid-read" };
       const prepare = sharingPreparation.prepareSessionMutationFacts;
-      const probe = vi.spyOn(sharingPreparation, "prepareSessionMutationFacts");
+      using probe = vi.spyOn(sharingPreparation, "prepareSessionMutationFacts");
       if (change === "session creation") {
         probe.mockImplementationOnce(async (params) => {
           await upsertSessionEntryCore(scope, { sessionId: "created-mid-read", updatedAt: 1 });
@@ -43,15 +44,11 @@ it.each(["catalog publication", "session creation"] as const)(
           }
         });
       }
-      try {
-        const respond = await historyRpc(context, scope.sessionKey)("chat.history");
-        if (change === "session creation") {
-          expectHistoryError(respond, { code: "UNAVAILABLE", retryable: true });
-        } else {
-          expectHistoryPayload(respond, { messages: [], sessionId: undefined });
-        }
-      } finally {
-        probe.mockRestore();
+      const respond = await historyRpc(context, scope.sessionKey)("chat.history");
+      if (change === "session creation") {
+        expectHistoryError(respond, { code: "UNAVAILABLE", retryable: true });
+      } else {
+        expectHistoryPayload(respond, { messages: [], sessionId: undefined });
       }
     });
   },
@@ -116,25 +113,19 @@ it.each(["chat.history", "chat.startup"] as const)(
         await appendTranscriptMessage(scope, {
           message: { role: "user", content: [{ type: "text", text: "Hello" }] },
         });
-        saveSubagentRegistryToSqlite(
-          new Map([
-            [
-              "retained",
-              {
-                runId: "retained",
-                childSessionKey: "agent:main:subagent:retained",
-                requesterSessionKey: scope.sessionKey,
-                requesterDisplayKey: "registry-history",
-                task: `retained-history-task:${"x".repeat(32_768)}`,
-                cleanup: "keep",
-                createdAt: 1,
-                execution: { status: "terminal", startedAt: 1, endedAt: 2 },
-                completion: { required: false },
-                delivery: { status: "not_required" },
-              },
-            ],
-          ]),
-        );
+        const retained = {
+          runId: "retained",
+          childSessionKey: "agent:main:subagent:retained",
+          requesterSessionKey: scope.sessionKey,
+          requesterDisplayKey: "registry-history",
+          task: `retained-history-task:${"x".repeat(32_768)}`,
+          cleanup: "keep",
+          createdAt: 1,
+          execution: { status: "terminal", startedAt: 1, endedAt: 2 },
+          completion: { required: false },
+          delivery: { status: "not_required" },
+        } satisfies SubagentRunRecord;
+        saveSubagentRegistryToSqlite(new Map([[retained.runId, retained]]));
         const context = await createHistoryReadContext();
         const rpc = historyRpc(context, scope.sessionKey);
         const request = async (cursor?: unknown) => {

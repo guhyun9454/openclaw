@@ -31,18 +31,13 @@ function queuedRun(runId: string) {
   });
   const context = createChatAbortContext({
     sources: [[runId, source]],
-    getSessionEventSubscriberConnIds: () => new Set(),
   });
   return { source, context };
 }
 
-function withdraw(
-  context: Parameters<typeof invokeChatAbortHandler>[0]["context"],
-  runId: string,
-  handler = handleChatAbortRequestWithLifecycle,
-) {
+function withdraw(context: Parameters<typeof invokeChatAbortHandler>[0]["context"], runId: string) {
   return invokeChatAbortHandler({
-    handler,
+    handler: handleChatAbortRequestWithLifecycle,
     context,
     request: { sessionKey: "main", runId, discardPendingInput: true },
     client: { connect: { scopes: ["operator.admin"] } },
@@ -54,7 +49,7 @@ describe("chat.abort exact controller input withdrawal", () => {
     const runId = "withdrawal-collision";
     const { source, context } = queuedRun(runId);
     let foreign: ReturnType<typeof registerChatAbortController> | undefined;
-    const discard = vi
+    using discard = vi
       .spyOn(withdrawal, "discardSessionPendingInput")
       .mockImplementation(async (_scope, _runId, assertCurrent) => {
         assertCurrent();
@@ -76,26 +71,18 @@ describe("chat.abort exact controller input withdrawal", () => {
         assertCurrent();
         return true;
       });
-    try {
-      await expect(withdraw(context, runId)).rejects.toThrow("Run changed before input removal");
-      expect(discard).toHaveBeenCalledOnce();
-      expect(source.input).toMatchObject({ abortSignal: { aborted: false }, withdrawalHolds: 0 });
-      expect(foreign).toMatchObject({ controller: { signal: { aborted: false } } });
-    } finally {
-      discard.mockRestore();
-    }
+    await expect(withdraw(context, runId)).rejects.toThrow("Run changed before input removal");
+    expect(discard).toHaveBeenCalledOnce();
+    expect(source.input).toMatchObject({ abortSignal: { aborted: false }, withdrawalHolds: 0 });
+    expect(foreign).toMatchObject({ controller: { signal: { aborted: false } } });
   });
 
   it("never withdraws a byte-distinct protocol run", async () => {
     const { source, context } = queuedRun(" source ");
-    const discard = vi.spyOn(withdrawal, "discardSessionPendingInput");
-    try {
-      const respond = await withdraw(context, "source");
-      expect(respond).toHaveBeenCalledWith(true, { ok: true, aborted: false, runIds: [] });
-      expect(discard).not.toHaveBeenCalled();
-      expect(source.input.abortSignal.aborted).toBe(false);
-    } finally {
-      discard.mockRestore();
-    }
+    using discard = vi.spyOn(withdrawal, "discardSessionPendingInput");
+    const respond = await withdraw(context, "source");
+    expect(respond).toHaveBeenCalledWith(true, { ok: true, aborted: false, runIds: [] });
+    expect(discard).not.toHaveBeenCalled();
+    expect(source.input.abortSignal.aborted).toBe(false);
   });
 });

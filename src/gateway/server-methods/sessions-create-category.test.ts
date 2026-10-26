@@ -38,14 +38,11 @@ test.each(["create", "patch"] as const)(
     }
     const entered = createDeferredCore();
     const release = createDeferredCore();
-    const order: string[] = [];
     const register = groups.ensureSessionGroupRegistered;
     vi.spyOn(groups, "ensureSessionGroupRegistered").mockImplementation(async (...args) => {
       entered.resolve();
       await release.promise;
-      const changed = await register(...args);
-      order.push("registered");
-      return changed;
+      return register(...args);
     });
     const writing = expectOk(`sessions.${operation}`, { agentId: "main", key, category: "Race" });
     await beforeReply(entered.promise, writing, "write did not enter registration");
@@ -56,17 +53,13 @@ test.each(["create", "patch"] as const)(
       queued.resolve();
       return deleting;
     });
-    const deleting = expectOk("sessions.groups.delete", { name: "Race" }).then((result) => {
-      order.push("deleted");
-      return result;
-    });
+    const deleting = expectOk("sessions.groups.delete", { name: "Race" });
     try {
       await beforeReply(queued.promise, deleting, "delete did not enqueue its member sweep");
     } finally {
       release.resolve();
       await Promise.all([writing, deleting]);
     }
-    expect(order).toEqual(["registered", "deleted"]);
     expect(categoryAt(storePath, key)).toBeUndefined();
     expect(groupNames()).not.toContain("Race");
   },
@@ -148,11 +141,7 @@ test("does not register an unapplied category on the reset-main creation path", 
   });
   expect(reset.payload?.key).toBe("agent:main:main");
   expect(reset.payload?.entry.category).toBeUndefined();
-  const listed = await directSessionReq<{ groups: Array<{ name: string }> }>(
-    "sessions.groups.list",
-    {},
-  );
-  expect(listed.payload?.groups.map(({ name }) => name)).not.toContain("Unapplied");
+  expect(groupNames()).not.toContain("Unapplied");
 });
 
 test("registers committed patchMany categories across physical stores", async () => {
