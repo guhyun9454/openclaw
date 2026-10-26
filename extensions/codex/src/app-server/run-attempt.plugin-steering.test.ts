@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
@@ -11,6 +10,7 @@ import {
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { expect, it, vi } from "vitest";
+import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import { itemNotification } from "./protocol.test-helpers.js";
 import { startClockControlledAttempt } from "./run-attempt-lifecycle.test-support.js";
 import {
@@ -24,18 +24,11 @@ import {
   readTranscriptMessagesByIdentity,
 } from "./sqlite-session.test-helpers.js";
 
-vi.mock("openclaw/plugin-sdk/agent-harness-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof agentHarnessRuntime>();
-  return { ...actual, setActiveEmbeddedRun: vi.fn(actual.setActiveEmbeddedRun) };
-});
-
 setupRunAttemptTestHooks();
 
 it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
   "checks the plugin lifetime at native dispatch: %s",
   async (scenario) => {
-    const registrations = vi.mocked(agentHarnessRuntime.setActiveEmbeddedRun);
-    registrations.mockClear();
     const params = createTestParams();
     const storePath = path.join(tempDir, "plugin-steering", "sessions.json");
     await attachSqliteSessionTarget(params, storePath, params.sessionId);
@@ -63,20 +56,17 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
         text,
         ...(deduplicate ? { idempotencyKey } : {}),
       });
-    const dispatchedSteers: unknown[] = [];
-    const harness = createStartedThreadHarness(
-      async (method, input) => {
-        if (method === "turn/steer") {
-          dispatchedSteers.push(input);
-        }
-      },
-      { persistedThreads: [] },
-    );
+    const harness = createStartedThreadHarness(undefined, { persistedThreads: [] });
+    const steers = () =>
+      harness.requests
+        .filter(({ method }) => method === "turn/steer")
+        .map(({ params: input }) => input);
+    const guidance = async () =>
+      (await readTranscriptMessagesByIdentity(params)).filter(
+        (message) => message.idempotencyKey === idempotencyKey || message.content === text,
+      );
     const { run, started } = startClockControlledAttempt(params);
     await started;
-    const handle = registrations.mock.calls.findLast((call) => call[0] === params.sessionId)?.[1];
-    assert(handle?.messageInjectionV2);
-    const queued = vi.spyOn(handle.messageInjectionV2, "queueMessageAsync");
     const admission = createDeferred<void>();
     const resume = createDeferred<void>();
     const requestSpy = vi.spyOn(harness.client, "request");
@@ -108,13 +98,11 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
       if (scenario === "disabled") {
         plugin.record.enabled = false;
         await expect(steer(false)).rejects.toThrow(/disabled|no longer loaded/);
-        expect(queued).not.toHaveBeenCalled();
+        expect(await guidance()).toEqual([]);
       } else {
         delivery = steer();
         await admission.promise;
-        const recorder = queued.mock.calls[0]?.[1]?.userTurnTranscriptRecorder;
-        assert(recorder);
-        expect.soft(recorder.hasPersisted()).toBe(false);
+        expect.soft(await guidance()).toEqual([]);
         if (scenario === "disposed") {
           await disposePluginRegistryInstances(plugin.registry);
         }
@@ -125,10 +113,8 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
             : { steered: true, runId: params.runId },
         );
         if (scenario === "disposed") {
-          expect(dispatchedSteers).toHaveLength(0);
-          expect
-            .soft(await readTranscriptMessagesByIdentity(params))
-            .not.toContainEqual(expect.objectContaining({ idempotencyKey }));
+          expect(steers()).toHaveLength(0);
+          expect.soft(await guidance()).toEqual([]);
           assert(params.sessionTarget?.agentId && params.sessionKey);
           const context = await SessionManager.openModelContextAsync({
             agentId: params.sessionTarget.agentId,
@@ -144,23 +130,20 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
         }
       }
       if (scenario !== "disabled") {
-        expect(dispatchedSteers).toMatchObject([
+        expect(steers()).toMatchObject([
           { expectedTurnId: "turn-1", input: [{ type: "text", text }] },
         ]);
-        expect(
-          (await readTranscriptMessagesByIdentity(params)).filter(
-            (message) => message.idempotencyKey === idempotencyKey,
-          ),
-        ).toEqual([expect.objectContaining({ content: text, display: false })]);
+        expect(await guidance()).toEqual([
+          expect.objectContaining({ content: text, display: false }),
+        ]);
       } else {
-        expect(dispatchedSteers).toHaveLength(0);
+        expect(steers()).toHaveLength(0);
       }
-      expect(handle.isAborted?.()).toBe(false);
     } finally {
       resume.resolve();
       await delivery;
       await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
-      await run;
+      expect(readAttemptTerminal(await run).aborted).toBe(false);
       await disposePluginRegistryInstances(plugin.registry);
     }
   },

@@ -8,29 +8,47 @@ describe("Codex Computer Use periodic health", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("runs the live list_apps probe on the configured cadence and clears on client close", async () => {
-    const client = createClient();
+  it.each([false, true])(
+    "probes on cadence and clears on close (reconfigured=%s)",
+    async (reconfigured) => {
+      const tools = reconfigured ? ["js", "js_reset", "turn_ended"] : undefined;
+      const client = createClient(
+        reconfigured ? { mcpServerName: "cua_repl", mcpTools: tools } : {},
+      );
+      startMonitor(client);
+      if (reconfigured) {
+        startMonitor(
+          client,
+          {
+            pluginName: "unified-computer-use",
+            mcpServerName: "cua_repl",
+            toolCallTimeoutMs: 45_000,
+          },
+          tools,
+        );
+      }
+      expect(client.request).not.toHaveBeenCalled();
 
-    startMonitor(client);
-    expect(client.request).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
 
-    await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(client.request).toHaveBeenCalledWith(
+        "thread/start",
+        {
+          input: [],
+          developerInstructions: "OpenClaw Computer Use readiness check",
+          ephemeral: true,
+        },
+        { timeoutMs: 60_000 },
+      );
+      expectProbe(client, reconfigured ? 45_000 : 60_000);
 
-    expect(client.request).toHaveBeenCalledWith(
-      "thread/start",
-      {
-        input: [],
-        developerInstructions: "OpenClaw Computer Use readiness check",
-        ephemeral: true,
-      },
-      { timeoutMs: 60_000 },
-    );
-    expectProbe(client, 60_000);
-
-    client.close();
-    await vi.advanceTimersByTimeAsync(30 * 60_000);
-    expectToolCalls(client, 1);
-  });
+      client.close();
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(
+        client.request.mock.calls.filter(([method]) => method === "mcpServer/tool/call"),
+      ).toHaveLength(1);
+    },
+  );
 
   it("reloads the owner-managed MCP runtime and retries once after a failed probe", async () => {
     const client = createClient({ liveTestFailures: 1 });
@@ -55,26 +73,6 @@ describe("Codex Computer Use periodic health", () => {
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(client.request).not.toHaveBeenCalled();
   });
-
-  it("replaces a same-interval monitor and probes the new unified tool configuration", async () => {
-    const tools = ["js", "js_reset", "turn_ended"];
-    const client = createClient({ mcpServerName: "cua_repl", mcpTools: tools });
-
-    startMonitor(client);
-    startMonitor(
-      client,
-      {
-        pluginName: "unified-computer-use",
-        mcpServerName: "cua_repl",
-        toolCallTimeoutMs: 45_000,
-      },
-      tools,
-    );
-
-    await vi.advanceTimersByTimeAsync(30 * 60_000);
-    expectProbe(client, 45_000);
-    expectToolCalls(client, 1);
-  });
 });
 
 function createClient(
@@ -86,17 +84,14 @@ function createClient(
     probeThreadPrefix: "health-probe-thread",
     ...options,
   });
-  const allowed = new Set([
-    "thread/start",
-    "mcpServer/tool/call",
-    "config/mcpServer/reload",
-    "thread/unsubscribe",
-  ]);
-  const request = vi.fn(async (method: string, params?: unknown) => {
-    if (!allowed.has(method)) {
-      throw new Error(`unexpected request ${method}`);
-    }
-    return fixture(method, params);
+  const request = vi.fn(async (...args: Parameters<typeof fixture>) => {
+    expect([
+      "thread/start",
+      "mcpServer/tool/call",
+      "config/mcpServer/reload",
+      "thread/unsubscribe",
+    ]).toContain(args[0]);
+    return fixture(...args);
   });
   const client = {
     request,
@@ -140,12 +135,6 @@ function startMonitor(
       ...overrides,
     },
   });
-}
-
-function expectToolCalls(client: ReturnType<typeof createClient>, count: number) {
-  expect(
-    client.request.mock.calls.filter(([method]) => method === "mcpServer/tool/call"),
-  ).toHaveLength(count);
 }
 
 // The strict request fixture already checks thread, server, tool, and arguments.

@@ -61,6 +61,10 @@ const cases = [
 type NativeConfigCase = (typeof cases)[number];
 
 function invocation(mode: NativeConfigCase, command: string, launcher: string) {
+  const shell = (script: string, ...args: string[]) => ({
+    command: "/bin/sh",
+    args: ["-c", script, "--", command, ...args],
+  });
   switch (mode) {
     case "managed package":
       return { command: "codex", args: [...mixedArgs] };
@@ -69,23 +73,17 @@ function invocation(mode: NativeConfigCase, command: string, launcher: string) {
     case "node wrapper":
       return { command: process.execPath, args: [launcher, ...mixedArgs, "--"] };
     case "shell wrapper":
-      return { command: "/bin/sh", args: ["-c", 'exec "$@"', "--", command, ...mixedArgs, "--"] };
+      return shell('exec "$@"', ...mixedArgs, "--");
     case "shell marker values":
-      return {
-        command: "/bin/sh",
-        args: [
-          "-c",
-          'exec "$@" app-server --listen stdio://',
-          "--",
-          command,
-          "--model",
-          "app-server",
-          "--image",
-          "photo.png",
-          "app-server",
-          ...rootOverrides,
-        ],
-      };
+      return shell(
+        'exec "$@" app-server --listen stdio://',
+        "--model",
+        "app-server",
+        "--image",
+        "photo.png",
+        "app-server",
+        ...rootOverrides,
+      );
     default:
       return { command, args: [...mixedArgs] };
   }

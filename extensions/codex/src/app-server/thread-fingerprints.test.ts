@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CodexDynamicToolFunctionSpec, JsonObject } from "./protocol.js";
+import type { JsonObject } from "./protocol.js";
 import {
   codexDynamicToolsFingerprint,
   codexLegacyDynamicToolsFingerprint,
@@ -32,23 +32,15 @@ it("preserves legacy JSON bytes, including literal prototype keys and escaped de
 });
 
 it("keeps tool fingerprints stable when tools and schema properties are reordered", () => {
-  const message: CodexDynamicToolFunctionSpec = {
+  const message = {
     type: "function",
     name: "message",
-    description: "Send a message.",
-    inputSchema: {
-      type: "object",
-      properties: { channel: { type: "string", description: "Current channel." } },
-    },
+    inputSchema: { type: "string", description: "Current channel." },
   };
-  const reorderedMessage: CodexDynamicToolFunctionSpec = {
+  const reorderedMessage = {
     name: message.name,
     type: message.type,
-    inputSchema: {
-      properties: { channel: { description: "Current channel.", type: "string" } },
-      type: "object",
-    },
-    description: message.description,
+    inputSchema: { description: "Current channel.", type: "string" },
   };
   const search = { ...message, name: "search" };
 
