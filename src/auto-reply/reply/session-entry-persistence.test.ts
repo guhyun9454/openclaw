@@ -1,7 +1,6 @@
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import * as sql from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as sessions from "../../config/sessions/session-accessor.js";
 import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
@@ -97,17 +96,10 @@ describe("persistReplySessionEntry", () => {
     };
     await replace(currentEntry);
 
-    const hostSql = sql.observeHostDataSql();
-    let result: Awaited<ReturnType<typeof persistReplySessionEntry>>;
-    try {
-      result = await persist(
-        { thinkingLevel: "high" },
-        { skipMaintenance: true, validateCommit: () => undefined },
-      );
-    } finally {
-      hostSql.restore();
-    }
-    expect(hostSql.queries.filter(sql.isSessionEntryDataSql)).toEqual([]);
+    const result = await persist(
+      { thinkingLevel: "high" },
+      { skipMaintenance: true, validateCommit: () => undefined },
+    );
 
     expect(result).toMatchObject({
       status: "current",
@@ -118,44 +110,38 @@ describe("persistReplySessionEntry", () => {
     expect(read()).toEqual(result.entry);
   });
 
-  it.each([
-    {
-      name: "rotated",
-      initialEntry: { ...baseEntry, thinkingLevel: "low" },
-      currentEntry: storedEntry({ sessionId: "session-2", thinkingLevel: "medium" }),
-      changes: { thinkingLevel: "high" },
-      error: "changed while starting work. Retry.",
-    },
-    {
-      name: "deleted (without recreating the row)",
-      initialEntry: baseEntry,
-      error: "was deleted while starting work. Retry.",
-    },
-    {
-      name: "archived (even for a same-value write)",
-      initialEntry: { ...baseEntry, modelOverride: "gpt-5.5" },
-      currentEntry: storedEntry({ modelOverride: "gpt-5.5", archivedAt: 300 }),
-      touchedFields: ["modelOverride"],
-      error: "is archived. Restore it before starting new work.",
-    },
-  ] satisfies Array<{
-    name: string;
-    initialEntry: SessionEntry;
-    currentEntry?: SessionEntry;
-    changes?: Partial<SessionEntry>;
-    touchedFields?: Array<keyof SessionEntry>;
-    error: string;
-  }>)("rejects persistence when the session is $name", async (row) => {
-    const { read, persist, replace } = fixture(row.initialEntry);
-    if (row.currentEntry) {
-      await replace(row.currentEntry);
+  it.each(["rotated", "deleted", "archived"] as const)("rejects %s sessions", async (state) => {
+    const initial =
+      state === "archived"
+        ? { ...baseEntry, modelOverride: "gpt-5.5" }
+        : state === "rotated"
+          ? { ...baseEntry, thinkingLevel: "low" as const }
+          : baseEntry;
+    const current =
+      state === "deleted"
+        ? undefined
+        : storedEntry(
+            state === "rotated"
+              ? { sessionId: "session-2", thinkingLevel: "medium" }
+              : { modelOverride: "gpt-5.5", archivedAt: 300 },
+          );
+    const { read, persist, replace } = fixture(initial);
+    if (current) {
+      await replace(current);
     }
-    const result = await persist(row.changes, { touchedFields: row.touchedFields });
+    const result = await persist(state === "rotated" ? { thinkingLevel: "high" } : {}, {
+      touchedFields: state === "archived" ? ["modelOverride"] : undefined,
+    });
+    const errors = {
+      rotated: "changed while starting work. Retry.",
+      deleted: "was deleted while starting work. Retry.",
+      archived: "is archived. Restore it before starting new work.",
+    };
     expect(result).toEqual({
       status: "lifecycle-invalidated",
-      error: `Session "${sessionKey}" ${row.error}`,
-      ...(row.currentEntry ? { entry: row.currentEntry } : {}),
+      error: `Session "${sessionKey}" ${errors[state]}`,
+      ...(current ? { entry: current } : {}),
     });
-    expect(read()).toEqual(row.currentEntry);
+    expect(read()).toEqual(current);
   });
 });

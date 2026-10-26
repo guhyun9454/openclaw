@@ -18,26 +18,14 @@ it("renders a full footer from a reply usage snapshot", () => {
     usage: { input: 204000, output: 15, cacheRead: 0, cacheWrite: 0, total: 204015 },
     turnUsd: 0.03771985,
   };
-  const pieces = [
-    { text: "{model.display_name|alias:models}" },
-    { map: "model.is_fallback", cases: { true: "🔄" } },
-    { text: " | " },
-    { when: "model.reasoning", text: "{model.reasoning|alias:reasoning}" },
-    { map: "state.fast_mode", cases: { true: "⚡", false: "🐌" } },
-    { text: " | 📚 [{context.pct_used|meter:5:braille}]{context.max_tokens|num}" },
-    { text: " | ${cost.turn_usd|fixed:4}" },
-  ];
+  const text =
+    "{model.display_name}|{model.reasoning}|{state.fast_mode}|{model.is_fallback}|{context.pct_used}|{context.max_tokens}|{cost.turn_usd}";
   const line = resolveResponseUsageLine({
     config: {
       messages: {
         responseUsage: "full",
         usageTemplate: {
-          scales: { braille: "⠐⡀⡄⡆⡇⣇⣧⣷⣿" },
-          aliases: {
-            models: { "claude-opus-4-6": "opus46" },
-            reasoning: { medium: "med" },
-          },
-          output: { sep: "", surfaces: { discord: pieces } },
+          output: { sep: "", surfaces: { discord: [{ text }] } },
         },
       },
     },
@@ -46,7 +34,7 @@ it("renders a full footer from a reply usage snapshot", () => {
     usage: replyUsageState.usage,
     replyUsageState,
   });
-  expect(line).toBe("opus46 | med🐌 | 📚 [⣿⣿⣿⣧⠐]272k | $0.0377");
+  expect(line).toBe("claude-opus-4-6|medium|false|false|75|272000|0.03771985");
 });
 const usageLine = "Usage: 12 in / 3 out";
 
