@@ -13,7 +13,6 @@
  * transport owner, not whole-Gateway performance.
  */
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import type { HeapProfiler } from "node:inspector";
 import { Session } from "node:inspector/promises";
 import { loadavg } from "node:os";
@@ -55,15 +54,25 @@ const workers = Array.from({ length: references ? 42 : 1 }, createWorker);
 const worker = workers[0]!;
 // The fixture must await its barrier even when every measured handle is idle.
 const fixtureReference = references ? setInterval(() => {}, 60_000) : undefined;
-const ready = workers.map((entry) => (entry.started ? Promise.resolve() : once(entry, "started")));
+const ready = workers.map((entry) =>
+  entry.started
+    ? Promise.resolve()
+    : new Promise<void>((resolve, reject) => {
+        entry.on("started", resolve);
+        entry.on("error", reject);
+      }),
+);
 let received = 0;
 let target = 0;
+let referencePass = 0;
 let complete: (() => void) | undefined;
 let fail: ((error: Error) => void) | undefined;
-worker.on("error", (error) => fail?.(error));
-if (!references) {
-  worker.on("message", (message) => {
-    if (direct) {
+for (const entry of workers) {
+  entry.on("error", (error) => fail?.(error));
+  entry.on("message", (message) => {
+    if (references) {
+      assert.equal(message, referencePass);
+    } else if (direct) {
       assert(message !== null && typeof message === "object");
       assert("id" in message && "actor" in message && "input" in message);
       assert(message.input instanceof Uint8Array);
@@ -80,7 +89,6 @@ if (!references) {
     }
   });
 }
-let referencePass = 0;
 async function referenceBatch() {
   for (let index = 0; index < iterations; index++) {
     const entry = workers[index % workers.length]!;
@@ -89,14 +97,18 @@ async function referenceBatch() {
   }
   // Post shares the supervisor FIFO with reference commands. Receiving all
   // echoes proves the base processed its messages before the pass ends.
-  const expected = ++referencePass;
-  await Promise.all(
-    workers.map(async (entry) => {
-      const reply = once(entry, "message");
-      entry.postMessage(expected, []);
-      assert.deepEqual(await reply, [expected]);
-    }),
-  );
+  referencePass++;
+  target = received + workers.length;
+  const done = new Promise<void>((resolve, reject) => {
+    complete = resolve;
+    fail = reject;
+  });
+  for (const entry of workers) {
+    entry.postMessage(referencePass, []);
+  }
+  await done;
+  complete = undefined;
+  fail = undefined;
 }
 async function batch() {
   if (references) {

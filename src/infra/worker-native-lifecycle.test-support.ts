@@ -525,13 +525,13 @@ async function runReferenceLiveness() {
     parentPort.on("message", value => setImmediate(() => parentPort.postMessage(value + 1)));`,
     { eval: true, execArgv: [] },
   );
+  let reply = createDeferredCore<unknown>();
+  worker.on("message", (value) => reply.resolve(value));
+  worker.on("error", (error) => reply.reject(error));
   const roundTrip = async () => {
-    const reply = createDeferredCore<unknown>();
-    worker.once("message", reply.resolve);
-    worker.once("error", reply.reject);
+    reply = createDeferredCore<unknown>();
     worker.postMessage(41, []);
     assert.equal(await reply.promise, 42);
-    worker.removeListener("error", reply.reject);
   };
   await roundTrip();
   worker.unref();
