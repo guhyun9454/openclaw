@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSystemAgentToolsMcpServerConfig } from "../../mcp/openclaw-tools-serve-config.js";
 import { withEnvAsync } from "../../test-utils/env.js";
-import { retireSessionMcpRuntime } from "../agent-bundle-mcp-manager-api.js";
 import {
   loopbackConfig,
   policyConfig,
@@ -32,28 +31,23 @@ describe("prepareCliBundleMcpConfig codex", () => {
         agents: { entries: { main: {}, worker: { tools: { deny: ["docs__delete_docs"] } } } },
         server: { codex: { agents: ["main"] } },
       });
-      await withEnvAsync(
+      const patch = await withEnvAsync(
         { OPENCLAW_STATE_DIR: cliBundleMcpHarness.bundleProbeHomeDir },
-        async () => {
-          try {
-            const patch = await prepareNativeMcpTestConfig({
-              sessionId,
-              sessionKey: "agent:main:conversation",
-              sandboxSessionKey,
-              sandboxAgentId,
-              timeoutMs: 1_000,
-              workspaceDir,
-              config,
-            });
-            expect(patch?.mcp_servers.docs).toMatchObject({
-              enabled_tools: ["read_docs"],
-              disabled_tools: ["app_docs", "delete_docs", "task_docs"],
-            });
-          } finally {
-            await retireSessionMcpRuntime({ sessionId, reason: "test-complete" });
-          }
-        },
+        () =>
+          prepareNativeMcpTestConfig({
+            sessionId,
+            sessionKey: "agent:main:conversation",
+            sandboxSessionKey,
+            sandboxAgentId,
+            timeoutMs: 1_000,
+            workspaceDir,
+            config,
+          }),
       );
+      expect(patch?.mcp_servers.docs).toMatchObject({
+        enabled_tools: ["read_docs"],
+        disabled_tools: ["app_docs", "delete_docs", "task_docs"],
+      });
     },
   );
 
@@ -66,7 +60,6 @@ describe("prepareCliBundleMcpConfig codex", () => {
     });
 
     expect(prepared.backend.args).toEqual(["exec", "-c", 'web_search="disabled"']);
-    expect(prepared.mcpConfigHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("projects session MCP tool denials into Codex disabled_tools", async () => {

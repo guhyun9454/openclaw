@@ -38,10 +38,6 @@ function nativeRun(replaysHistory = false, history = false) {
     }),
     settleNativeLogin: vi.fn(async () => void calls.push("settleNativeLogin")),
   };
-  return { writer, calls, context: nativeContext(writer, calls, history) };
-}
-
-function nativeContext(writer: CliExecutionHistoryWriter, calls: string[], history = false) {
   const context = buildPreparedCliRunContext({
     model: "fixture-model",
     backend: {
@@ -61,7 +57,7 @@ function nativeContext(writer: CliExecutionHistoryWriter, calls: string[], histo
     calls.push("spawn");
     return createManagedRun({ ...createSuccessfulProcessExit(), durationMs: 1, stdout: "done" });
   });
-  return context;
+  return { writer, calls, context };
 }
 
 describe("native login history owner at execution", () => {
@@ -96,11 +92,7 @@ describe("native login history owner at execution", () => {
           ...createSuccessfulProcessExit(),
           stdout: JSON.stringify({
             result: "done",
-            session_id: spawn.argv.includes("--fork-session")
-              ? "fork-successor"
-              : spawn.argv.includes("--resume")
-                ? spawn.argv[spawn.argv.indexOf("--resume") + 1]
-                : "fresh-native",
+            session_id: "native-result",
           }),
         });
       });
