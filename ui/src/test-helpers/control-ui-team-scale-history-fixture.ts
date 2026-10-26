@@ -5,6 +5,7 @@ export function createTeamScaleHistoryFixture(options: {
   inlineWidgets: number;
   now: number;
   largeSnapshot?: boolean;
+  rowFacts?: boolean;
   attachments?: ReturnType<typeof createTeamScaleDuplicateReadFixture>["attachments"];
 }) {
   const messageIds = Array.from(
@@ -48,5 +49,48 @@ export function createTeamScaleHistoryFixture(options: {
       },
     ],
   }));
+  if (options.rowFacts) {
+    const runId = "synthetic-row-facts-run";
+    const tail = historyMessages.slice(-3);
+    for (const message of tail) {
+      Object.assign(message, { runId });
+      Object.assign(message.__openclaw, { runId });
+    }
+    Object.assign(tail[0]!, { role: "user" });
+    Object.assign(tail[1]!, {
+      role: "toolResult",
+      toolCallId: "synthetic-row-facts-read",
+      toolName: "read",
+      content: [{ type: "text", text: "Synthetic verification output." }],
+      activity: [
+        {
+          itemId: "tool:synthetic-row-facts-read",
+          toolCallId: "synthetic-row-facts-read",
+          kind: "tool",
+          phase: "end",
+          name: "read",
+          title: "Read",
+          status: "completed",
+        },
+      ],
+    });
+    Object.assign(tail[2]!, {
+      model: "gpt-5-mini",
+      usage: { input: 1200, output: 400, cost: { total: 0.01 } },
+    });
+    const id = "synthetic-row-facts-failure";
+    const summary = "Synthetic verification failed; retry the check.";
+    messageIds.push(id);
+    historyMessages.push(
+      Object.assign({}, historyMessages.at(-1)!, {
+        role: "custom",
+        customType: "run-failed-before-reply",
+        content: [{ type: "text", text: summary }],
+        openclawRunError: { runId, summary },
+        __openclaw: { id, seq: options.messageCount + 1, runId },
+        timestamp: options.now + 1,
+      }),
+    );
+  }
   return { messageIds, historyMessages };
 }

@@ -1,5 +1,5 @@
 /** Browser-only diagnostic, serialized after the mock socket and wire-delay probe. */
-export function warmReloadProbe() {
+export function warmReloadProbe(input: { rowFacts?: boolean } = {}) {
   const milestones: Record<string, number> = {};
   const mutations: Array<{ at: number; count: number; region: string }> = [];
   const shifts: Array<{ at: number; value: number }> = [];
@@ -42,6 +42,47 @@ export function warmReloadProbe() {
   let removedRows = 0;
   let stopped = false;
   let cachedRows: Element[] = [];
+  const factSelectors = {
+    reactions: ".chat-message-reactions",
+    notices: ".chat-run-failure",
+    activity: ".chat-activity-group",
+    meta: ".msg-meta",
+  };
+  const factFrames: Array<{
+    at: number;
+    changes: Array<{ rowKey: string | null; parts: string[]; heightDelta: number }>;
+  }> = [];
+  const threadFrames: Array<{ at: number; height: number; rowKeys: Array<string | null> }> = [];
+  const rowWindows: Array<{ at: number; rowKeys: Array<string | null> }> = [];
+  const firstRowFacts: Array<{
+    rowKey: string | null;
+    cached: boolean;
+    counts: Record<string, number>;
+  }> = [];
+  const observed = new WeakSet<Element>();
+  const sizes = new WeakMap<Element, number>();
+  const rowFacts = new WeakMap<
+    Element,
+    {
+      parts: Record<string, string>;
+      heights: Record<string, Array<number | undefined>>;
+      height?: number;
+      cached: boolean;
+    }
+  >();
+  const resize = input.rowFacts
+    ? new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          sizes.set(entry.target, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+        }
+      })
+    : undefined;
+  const observeSize = (element: Element) => {
+    if (!observed.has(element)) {
+      observed.add(element);
+      resize?.observe(element);
+    }
+  };
   let retainedAtCatchup: number | null = null;
   const duplicateRowKeys = new Set<string>();
   type TranscriptAnchor = {
@@ -320,6 +361,73 @@ export function warmReloadProbe() {
     );
     if (visible) {
       mark("firstTranscript");
+      if (resize && inner) {
+        const at = performance.now();
+        const rowKeys = currentRows.map((row) => row.getAttribute("data-virtual-row-key"));
+        if (JSON.stringify(rowWindows.at(-1)?.rowKeys) !== JSON.stringify(rowKeys)) {
+          rowWindows.push({ at, rowKeys });
+        }
+        observeSize(inner);
+        const height = sizes.get(inner);
+        if (height !== undefined && threadFrames.at(-1)?.height !== height) {
+          threadFrames.push({ at, height, rowKeys });
+        }
+        const changes: (typeof factFrames)[number]["changes"] = [];
+        for (const row of currentRows) {
+          observeSize(row);
+          const parts: Record<string, string> = {};
+          const heights: Record<string, Array<number | undefined>> = {};
+          const counts: Record<string, number> = {};
+          for (const [part, selector] of Object.entries(factSelectors)) {
+            const elements = [...row.querySelectorAll(selector)];
+            elements.forEach(observeSize);
+            parts[part] = JSON.stringify(
+              elements.map((element) => [
+                element.textContent,
+                element.querySelectorAll("*").length,
+              ]),
+            );
+            heights[part] = elements.map((element) => sizes.get(element));
+            counts[part] = elements.length;
+          }
+          const previous = rowFacts.get(row);
+          const height = sizes.get(row);
+          const cached =
+            previous?.cached ?? Boolean(milestones.cacheRead && !milestones.catchupResponse);
+          if (previous?.cached) {
+            const changed = Object.keys(parts).filter(
+              (part) =>
+                previous.parts[part] !== parts[part] ||
+                heights[part]!.some((height, index) => {
+                  const before = previous.heights[part]?.[index];
+                  return (
+                    height !== undefined && before !== undefined && Math.abs(height - before) > 0.5
+                  );
+                }),
+            );
+            const heightDelta =
+              height !== undefined && previous.height !== undefined ? height - previous.height : 0;
+            if (changed.length || Math.abs(heightDelta) > 0.5) {
+              changes.push({
+                rowKey: row.getAttribute("data-virtual-row-key"),
+                parts: changed,
+                heightDelta,
+              });
+            }
+          } else if (!previous) {
+            // A new row's complete first frame is the baseline, never an addition.
+            firstRowFacts.push({
+              rowKey: row.getAttribute("data-virtual-row-key"),
+              cached,
+              counts,
+            });
+          }
+          rowFacts.set(row, { parts, heights, height, cached });
+        }
+        if (changes.length) {
+          factFrames.push({ at, changes });
+        }
+      }
       if (!milestones.catchupResponse && milestones.cacheRead) {
         mark("firstCachedTranscript");
         if (!cachedRows.length) {
@@ -385,7 +493,26 @@ export function warmReloadProbe() {
     read() {
       stopped = true;
       observer.disconnect();
+      resize?.disconnect();
       const perf = Reflect.get(window, "__perf");
+      const coverage = input.rowFacts
+        ? Object.fromEntries(
+            Object.entries(factSelectors).map(([part, selector]) => [
+              part,
+              document.querySelectorAll(`.chat-pane-cache__pane--active .chat-thread ${selector}`)
+                .length,
+            ]),
+          )
+        : {};
+      if (
+        input.rowFacts &&
+        (!firstRowFacts.some((row) => row.cached) ||
+          Object.values(coverage).some((count) => count === 0))
+      ) {
+        throw new Error(
+          `Unqualified row-facts sample: cached rows or fact coverage missing (${JSON.stringify(coverage)})`,
+        );
+      }
       return {
         milestones,
         measures: performance.getEntriesByType("measure").map((entry) => entry.toJSON()),
@@ -398,6 +525,15 @@ export function warmReloadProbe() {
         lastLayoutShift: shifts.at(-1)?.at ?? null,
         lastMutationBurst: mutations.findLast((batch) => batch.count >= 10)?.at ?? null,
         mutations,
+        rowFacts: input.rowFacts
+          ? {
+              firstRowFacts,
+              frames: factFrames,
+              threadFrames,
+              rowWindows,
+              coverage,
+            }
+          : undefined,
         states,
         longTasks,
         sidebarFrames,
