@@ -46,6 +46,17 @@ async function expectPending(baseDir: string, expected: object) {
   expect((await listNodePairing(baseDir)).pending).toEqual([expect.objectContaining(expected)]);
 }
 
+function expectRequest(
+  result: ReturnType<ReturnType<typeof createNodeReapprovalCoordinator>["request"]>,
+  request: object,
+  created?: boolean,
+) {
+  return expect(result).resolves.toMatchObject({
+    request,
+    ...(created === undefined ? {} : { created }),
+  });
+}
+
 describe("node reapproval coordinator", () => {
   beforeAll(() => tempDirs.setup());
 
@@ -75,28 +86,16 @@ describe("node reapproval coordinator", () => {
       }
       return result;
     };
-    await expect(reconnect()).resolves.toMatchObject({
-      request: { requestId: pending.request.requestId },
-      created: false,
-    });
-    await expect(reconnect("microphone")).resolves.toMatchObject({
-      request: { caps: ["camera", "microphone"] },
-      created: true,
-    });
+    await expectRequest(reconnect(), { requestId: pending.request.requestId }, false);
+    await expectRequest(reconnect("microphone"), { caps: ["camera", "microphone"] }, true);
 
     coordinator.updateConfig({ ...limit, maxAttempts: 1, exemptLoopback: true });
     await expect(request("location")).resolves.toBeNull();
     await expectPending(baseDir, { caps: ["camera", "microphone"] });
-    await expect(request("microphone")).resolves.toMatchObject({
-      request: { caps: ["camera", "microphone"] },
-      created: false,
-    });
+    await expectRequest(request("microphone"), { caps: ["camera", "microphone"] }, false);
 
     await clock.advanceBy(60_000);
-    await expect(request("location")).resolves.toMatchObject({
-      request: { caps: ["camera", "location"] },
-      created: true,
-    });
+    await expectRequest(request("location"), { caps: ["camera", "location"] }, true);
 
     coordinator.dispose();
     expect(scheduler.nextWakeAtMs).toBeNull();
@@ -117,12 +116,13 @@ describe("node reapproval coordinator", () => {
       const active = request();
       const stale = request("microphone");
       const latest = request(surface);
-      await expect(active).resolves.toMatchObject({ request: { caps: ["camera", "screen"] } });
+      await expectRequest(active, { caps: ["camera", "screen"] });
       await expect(stale).resolves.toBeNull();
-      await expect(latest).resolves.toMatchObject({
-        request: { caps: ["camera", surface] },
-        ...(surface === "screen" ? { created: false } : {}),
-      });
+      await expectRequest(
+        latest,
+        { caps: ["camera", surface] },
+        surface === "screen" ? false : undefined,
+      );
       await expectPending(baseDir, { caps: ["camera", surface] });
       coordinator.dispose();
     },
@@ -143,13 +143,8 @@ describe("node reapproval coordinator", () => {
     const latestReuse = reuse(latest.cleanupClaim);
     const cleanup = coordinator.finalizeCleanup(staleCleanup.cleanupClaim!);
 
-    await expect(firstReuse).resolves.toMatchObject({
-      request: { requestId: pending.request.requestId },
-    });
-    await expect(latestReuse).resolves.toMatchObject({
-      request: { requestId: pending.request.requestId },
-      created: false,
-    });
+    await expectRequest(firstReuse, { requestId: pending.request.requestId });
+    await expectRequest(latestReuse, { requestId: pending.request.requestId }, false);
     await expect(cleanup).resolves.toEqual([]);
     await expectPending(baseDir, { requestId: pending.request.requestId });
 

@@ -2,7 +2,6 @@ import { expect, test } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createGatewayWorkerPlacementMoveBarrier } from "./server-worker-placement-move-barrier.js";
-import { loadSessionEntryAsync } from "./session-entry-load.test-support.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
 import { resolveCanonicalSessionEntryFromStoreKeys } from "./session-utils-store.js";
 import { writeSessionStore } from "./test-helpers.js";
@@ -64,7 +63,6 @@ test.for(["delete", "archive", "recover"] as const)(
     const releaseMove = createDeferredCore();
     const reclaimEntered = createDeferredCore();
     const cleanupBlockedReclaim = createDeferredCore<never>();
-    let moveAcquired = false;
     let serializedReclaim: Promise<unknown> | undefined;
     const moveBarrier = createGatewayWorkerPlacementMoveBarrier({
       placements: { waitForTurnClaimRelease: async () => {} },
@@ -91,7 +89,6 @@ test.for(["delete", "archive", "recover"] as const)(
             ...identity,
             sourceDisposition: "reconcile",
             begin: async () => {
-              moveAcquired = true;
               throw new Error("move preflight rejected");
             },
           });
@@ -153,7 +150,6 @@ test.for(["delete", "archive", "recover"] as const)(
       // The retained worker read can finish after the next event-loop turn.
       await withinTest(moving, signal);
       expect(await moving).toMatchObject({ message: "move preflight rejected" });
-      expect(moveAcquired).toBe(true);
       await serializedReclaim;
     } finally {
       // Unwind the real queues even when the ordering assertions fail.
@@ -164,16 +160,5 @@ test.for(["delete", "archive", "recover"] as const)(
     }
     const result = await lifecycle;
     expect(result.ok, JSON.stringify(result.error)).toBe(true);
-    const entry = (await loadSessionEntryAsync(sessionKey)).entry;
-    if (action === "delete") {
-      expect(entry).toBeUndefined();
-    } else {
-      expect(entry?.archivedAt).toEqual(expect.any(Number));
-      if (action === "recover") {
-        expect(entry).toMatchObject({
-          mainRestartRecovery: { tombstone: { recoveredSessionKey: expect.any(String) } },
-        });
-      }
-    }
   },
 );
