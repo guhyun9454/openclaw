@@ -102,10 +102,7 @@ describe("persistReplySessionEntry", () => {
     try {
       result = await persist(
         { thinkingLevel: "high" },
-        {
-          skipMaintenance: true,
-          validateCommit: () => undefined,
-        },
+        { skipMaintenance: true, validateCommit: () => undefined },
       );
     } finally {
       hostSql.restore();

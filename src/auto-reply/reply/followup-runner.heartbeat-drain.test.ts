@@ -90,10 +90,7 @@ it("keeps cleanup runner options out of a deferred queued user turn", async ({ s
   });
   const typing = createMockTypingController();
   const defaults = { typing, typingMode: "never" as const, defaultModel: "gpt-test" };
-  const userRunner = createFollowupRunner({
-    ...defaults,
-    opts: {},
-  });
+  const userRunner = createFollowupRunner({ ...defaults, opts: {} });
   const cleanupRunner = createFollowupRunner({
     ...defaults,
     opts: {
@@ -149,14 +146,11 @@ it("keeps cleanup runner options out of a deferred queued user turn", async ({ s
     expect(admissionState.beforeAdmission).toHaveBeenCalledTimes(2);
     expect(state.execute).toHaveBeenCalledOnce();
     const retriedExecution: AgentTurnParams = state.execute.mock.calls[0]![0];
-    expect(retriedExecution).toMatchObject({
-      opts: {},
+    expect(retriedExecution.opts).toMatchObject({
+      cleanupBundleMcpOnRunEnd: undefined,
+      bootstrapContextMode: undefined,
+      sourceReplyDeliveryMode: undefined,
     });
-    expect([
-      retriedExecution.opts?.cleanupBundleMcpOnRunEnd,
-      retriedExecution.opts?.bootstrapContextMode,
-      retriedExecution.opts?.sourceReplyDeliveryMode,
-    ]).toEqual(Array(3).fill(undefined));
   } finally {
     releaseFirst.resolve();
     cleanupOperation.complete();

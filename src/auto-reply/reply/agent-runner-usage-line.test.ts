@@ -32,9 +32,7 @@ it("renders a full footer from a reply usage snapshot", () => {
       messages: {
         responseUsage: "full",
         usageTemplate: {
-          scales: {
-            braille: "⠐⡀⡄⡆⡇⣇⣧⣷⣿",
-          },
+          scales: { braille: "⠐⡀⡄⡆⡇⣇⣧⣷⣿" },
           aliases: {
             models: { "claude-opus-4-6": "opus46" },
             reasoning: { medium: "med" },
@@ -122,10 +120,7 @@ it("decorates a completed source reply and keeps its private final separate", ()
   };
   const payload = setReplyPayloadMetadata(
     { text: "message tool reply" },
-    {
-      deliverDespiteSourceReplySuppression: true,
-      sourceReplyTranscriptMirror: mirror,
-    },
+    { deliverDespiteSourceReplySuppression: true, sourceReplyTranscriptMirror: mirror },
   );
 
   const privateFinal = { text: "private final" };
@@ -138,10 +133,7 @@ it("decorates a completed source reply and keeps its private final separate", ()
   expect(getReplyPayloadMetadata(privateFinal)).toBeUndefined();
   expect(getReplyPayloadMetadata(expectDefined(updated, "updated test invariant"))).toMatchObject({
     deliverDespiteSourceReplySuppression: true,
-    sourceReplyTranscriptMirror: {
-      ...mirror,
-      text: "message tool reply\nUsage: 12 in / 3 out",
-    },
+    sourceReplyTranscriptMirror: { ...mirror, text: "message tool reply\nUsage: 12 in / 3 out" },
   });
 });
 
@@ -150,9 +142,7 @@ it("emits a suppression-authorized footer when no captured source payload exists
     completedSourceReply: true,
   });
 
-  expect(result).toHaveLength(2);
-  expect(result[0]).toEqual({ text: "private final" });
-  expect(result[1]).toMatchObject({ text: usageLine, isStatusNotice: true });
+  expect(result).toEqual([{ text: "private final" }, { text: usageLine, isStatusNotice: true }]);
   expect(
     getReplyPayloadMetadata(expectDefined(result[1], "completed source footer")),
   ).toMatchObject({

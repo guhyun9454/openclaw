@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEntry, SessionOrigin } from "../../config/sessions/types.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import { normalizeLegacySessionEntryDelivery } from "../../infra/state-migrations.legacy-session-store.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
@@ -10,7 +10,6 @@ type RouteParams = Parameters<typeof resolveEffectiveReplyRoute>[0];
 type LegacyDeliveryFixture = Partial<SessionEntry> & {
   route?: ChannelRouteRef;
   deliveryContext?: DeliveryContext;
-  origin?: SessionOrigin;
   lastChannel?: string;
   lastTo?: string;
   lastAccountId?: string;
@@ -18,6 +17,12 @@ type LegacyDeliveryFixture = Partial<SessionEntry> & {
 
 const entry = (params: LegacyDeliveryFixture): NonNullable<RouteParams["entry"]> =>
   normalizeLegacySessionEntryDelivery(params as SessionEntry);
+const legacyRoute = (deliveryContext: DeliveryContext, lastChannel: string) => ({
+  deliveryContext,
+  lastChannel,
+  lastTo: "last-to",
+  lastAccountId: "last-account",
+});
 
 const persisted = { channel: "telegram", to: "chat:persisted", accountId: "persisted-account" };
 const discord = { channel: "discord", to: "channel:persisted", accountId: "persisted-account" };
@@ -48,12 +53,7 @@ describe("resolveEffectiveReplyRoute", () => {
     [
       "does not inherit a route without an internal wake source",
       { InputProvenance: { kind: "internal_system", sourceTool: "restart-sentinel" } },
-      {
-        deliveryContext: persisted,
-        lastChannel: "whatsapp",
-        lastTo: "last-to",
-        lastAccountId: "last-account",
-      },
+      legacyRoute(persisted, "whatsapp"),
       { channel: undefined, to: undefined, accountId: undefined },
     ],
     [
@@ -86,12 +86,7 @@ describe("resolveEffectiveReplyRoute", () => {
     [
       "prefers live origin context for exec-event replies",
       { ...live, MessageThreadId: 43, AccountId: "live-account" },
-      {
-        deliveryContext: discord,
-        lastChannel: "slack",
-        lastTo: "last-to",
-        lastAccountId: "last-account",
-      },
+      legacyRoute(discord, "slack"),
       { channel: "telegram", to: "chat:live", accountId: "live-account", threadId: 43 },
     ],
     [
@@ -107,12 +102,7 @@ describe("resolveEffectiveReplyRoute", () => {
       { channel: "telegram", to: "chat:live", accountId: "persisted-account", chatType: "direct" },
     ],
   ])("%s", (_name, ctx, stored, expected) => {
-    expect(
-      resolveEffectiveReplyRoute({
-        ctx,
-        entry: entry(stored),
-      }),
-    ).toEqual(expected);
+    expect(resolveEffectiveReplyRoute({ ctx, entry: entry(stored) })).toEqual(expected);
   });
 
   it.each([
@@ -151,6 +141,6 @@ describe("resolveEffectiveReplyRoute", () => {
         ctx: { InternalTurnSource: "exec" },
         entry: { delivery: normalizeSessionDeliveryState({ context: persisted }) },
       }),
-    ).toEqual({ channel: "telegram", to: "chat:persisted", accountId: "persisted-account" });
+    ).toEqual(persisted);
   });
 });
