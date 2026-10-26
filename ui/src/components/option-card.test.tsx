@@ -40,25 +40,6 @@ function expectRows(view: ReturnType<typeof mount>, rows: HTMLElement[]) {
 }
 
 describe("option card", () => {
-  it("accents and focuses the recommended choice, then calls its selection handler", () => {
-    const onSelect = vi.fn();
-    const { container } = mount({
-      header: "Access",
-      options: choices(true, "Use announced defaults").toReversed(),
-      onSelect,
-    });
-    const recommended = container.querySelector<HTMLButtonElement>(
-      ".option-card__choice--recommended",
-    )!;
-
-    expect(recommended.getAttribute("aria-checked")).toBe("true");
-    expect(recommended.textContent).toContain("Recommended");
-    expect(document.activeElement).toBe(recommended);
-    recommended.click();
-
-    expect(onSelect).toHaveBeenCalledWith("one");
-  });
-
   it("preserves external focus without retrying a refused recommendation", () => {
     const control = document.createElement("textarea");
     const view = mountBeside(control, { options: choices(true), disabled: false }, true);
@@ -74,13 +55,20 @@ describe("option card", () => {
 
   it("holds a disabled recommendation and retains selection and rows across display updates", () => {
     const onSelect = vi.fn();
-    const view = mount({ options: choices(true), disabled: true, onSelect });
+    const view = mount({
+      header: "Access",
+      options: choices(true).toReversed(),
+      disabled: true,
+      onSelect,
+    });
     const recommended = view.getByRole("radio", { name: "OneRecommended" });
     const second = view.getByRole("radio", { name: "Two" });
+    expect(recommended.classList.contains("option-card__choice--recommended")).toBe(true);
+    expect(checked(recommended)).toBe("true");
     expect(document.activeElement).toBe(document.body);
 
-    view.update({ options: choices(true, "Updated details") });
-    expectRows(view, [recommended, second]);
+    view.update({ options: choices(true, "Updated details").toReversed() });
+    expectRows(view, [second, recommended]);
     expect(document.activeElement).toBe(document.body);
 
     view.update({ disabled: false });
@@ -96,27 +84,23 @@ describe("option card", () => {
     expect(second.hasAttribute("disabled")).toBe(true);
     expect(onSelect).toHaveBeenCalledExactlyOnceWith("two");
 
-    view.update({ disabled: false, options: choices(true, "More details") });
-    expectRows(view, [recommended, second]);
+    view.update({ disabled: false, options: choices(true, "More details").toReversed() });
+    expectRows(view, [second, recommended]);
     expect(checked(second)).toBe("true");
 
     view.update({ question: "Next question", disabled: false });
     expect(checked(recommended)).toBe("true");
     expect(document.activeElement).toBe(recommended);
+    recommended.click();
+    expect(onSelect).toHaveBeenLastCalledWith("one");
   });
 
   it("cancels a disabled recommendation when the next request has none", () => {
-    const view = mount({
-      options: [{ value: "one", label: "One", recommended: true }],
-      disabled: true,
-    });
-    view.update({
-      question: "Choose freely",
-      options: [{ value: "one", label: "One", recommended: false }],
-    });
+    const view = mount({ options: choices(true), disabled: true });
+    view.update({ question: "Choose freely", options: choices() });
     view.update({ disabled: false });
 
-    expect(checked(view.getByRole("radio"))).toBe("false");
+    expect(checked(view.getByRole("radio", { name: "One" }))).toBe("false");
     expect(document.activeElement).toBe(document.body);
   });
 
