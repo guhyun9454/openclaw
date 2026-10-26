@@ -29,13 +29,8 @@ afterEach(() => {
 });
 
 function createContext(
-  overrides: {
-    supported?: boolean;
-    canManage?: boolean;
-    permission?: NotificationPermission | "unsupported";
-    subscription?: AutoPromptContext["webPush"]["snapshot"]["subscription"];
-    loading?: boolean;
-    nativePermission?: NativePermission | null;
+  overrides: Partial<AutoPromptContext["webPush"]["snapshot"]> & {
+    nativePermission?: NativePermission;
   } = {},
 ) {
   const enable = vi.fn(async () => undefined);
@@ -59,56 +54,42 @@ function createContext(
       run: enable,
     },
   } as unknown as AutoPromptContext;
-  return { context, enable, requestPermission };
+  const expectPrompt = (browser = 0, native = 0, enabled = 0, stored: string | null = null) => {
+    expect(browserRequestPermission).toHaveBeenCalledTimes(browser);
+    expect(requestPermission).toHaveBeenCalledTimes(native);
+    expect(enable).toHaveBeenCalledTimes(enabled);
+    expect(storage.getItem(STORAGE_KEY)).toBe(stored);
+  };
+  return { context, expectPrompt };
 }
 
 describe("notification auto-prompt", () => {
   it("requests browser permission synchronously and enables web push only once", async () => {
-    const { context, enable } = createContext();
-
+    const { context, expectPrompt } = createContext();
     autoPromptNotificationsOnSend(context);
     autoPromptNotificationsOnSend(context);
 
-    expect(browserRequestPermission).toHaveBeenCalledOnce();
-    expect(enable).not.toHaveBeenCalled();
+    expectPrompt(1, 0, 0, "1");
     await Promise.resolve();
-    expect(enable).toHaveBeenCalledOnce();
-    expect(storage.getItem(STORAGE_KEY)).toBe("1");
+    expectPrompt(1, 0, 1, "1");
   });
 
   it.each([
     ["loading", { loading: true }],
     ["Gateway access denied", { canManage: false }],
   ])("does not enable web push when it is %s", (_name, overrides) => {
-    const { context, enable } = createContext(overrides);
-
+    const { context, expectPrompt } = createContext(overrides);
     autoPromptNotificationsOnSend(context);
-
-    expect(enable).not.toHaveBeenCalled();
-    expect(browserRequestPermission).not.toHaveBeenCalled();
-    expect(storage.getItem(STORAGE_KEY)).toBeNull();
+    expectPrompt();
   });
 
-  it("prefers the native permission flow when permission is not determined", () => {
-    const { context, enable, requestPermission } = createContext({
-      nativePermission: "notDetermined",
-    });
-
+  it.each([
+    ["notDetermined", 1, "1"],
+    ["denied", 0, null],
+  ] as const)("handles native permission %s", (nativePermission, requests, stored) => {
+    const { context, expectPrompt } = createContext({ nativePermission });
     autoPromptNotificationsOnSend(context);
-
-    expect(requestPermission).toHaveBeenCalledOnce();
-    expect(enable).not.toHaveBeenCalled();
-    expect(storage.getItem(STORAGE_KEY)).toBe("1");
-  });
-
-  it("does not request native permission when it is denied", () => {
-    const { context, enable, requestPermission } = createContext({ nativePermission: "denied" });
-
-    autoPromptNotificationsOnSend(context);
-
-    expect(requestPermission).not.toHaveBeenCalled();
-    expect(enable).not.toHaveBeenCalled();
-    expect(storage.getItem(STORAGE_KEY)).toBeNull();
+    expectPrompt(0, requests, 0, stored);
   });
 
   it("fails closed when the localStorage getter throws", () => {
@@ -118,13 +99,12 @@ describe("notification auto-prompt", () => {
         throw new Error("opaque origin");
       },
     });
-    const { context, enable, requestPermission } = createContext({
+    const { context, expectPrompt } = createContext({
       nativePermission: "notDetermined",
     });
 
     expect(() => autoPromptNotificationsOnSend(context)).not.toThrow();
-    expect(requestPermission).not.toHaveBeenCalled();
-    expect(enable).not.toHaveBeenCalled();
+    expectPrompt();
   });
 });
 
