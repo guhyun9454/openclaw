@@ -10,6 +10,7 @@ import {
 import {
   persistDevicePairingStoreState,
   readDevicePairingStoreSnapshotFromDatabase,
+  type DevicePairingStoreState,
 } from "../device-pairing-store.js";
 import { removePairedDevice } from "../device-pairing.js";
 import {
@@ -77,6 +78,18 @@ function readTombstone(database: OpenClawStateDatabase, nodeId: string) {
 const engines = mixedAgentConnection ? (["sqlite", "postgres"] as const) : (["sqlite"] as const);
 describe.each(engines)("%s APNs deletion transaction", (engine) => {
   const fixture = useMixedAgentPair(engine, engine);
+  const persistPairing = (
+    pairedByDeviceId: DevicePairingStoreState["pairedByDeviceId"],
+    clearApnsNodeIds?: string[],
+  ) =>
+    admit(() =>
+      persistDevicePairingStoreState(
+        { pendingById: {}, pairedByDeviceId },
+        fixture.root,
+        "paired",
+        clearApnsNodeIds ? { clearApnsNodeIds } : undefined,
+      ),
+    );
 
   it("clears in three statements and advances tombstones for present and absent owners", () => {
     admit(() => {
@@ -123,25 +136,16 @@ describe.each(engines)("%s APNs deletion transaction", (engine) => {
       const nodeId = `synthetic-overflow-${caller}`;
       const database = admit(() => openOpenClawStateDatabase());
       const registration = admit(() => seed(database, nodeId, Number.MAX_SAFE_INTEGER, 17));
-      admit(() =>
-        persistDevicePairingStoreState(
-          {
-            pendingById: {},
-            pairedByDeviceId: {
-              [nodeId]: {
-                deviceId: nodeId,
-                publicKey: "synthetic-public-key",
-                role: "node",
-                roles: ["node"],
-                createdAtMs: 1,
-                approvedAtMs: 2,
-              },
-            },
-          },
-          fixture.root,
-          "paired",
-        ),
-      );
+      persistPairing({
+        [nodeId]: {
+          deviceId: nodeId,
+          publicKey: "synthetic-public-key",
+          role: "node",
+          roles: ["node"],
+          createdAtMs: 1,
+          approvedAtMs: 2,
+        },
+      });
       const read = () =>
         admit(() => ({
           registration: readApnsRegistrationFromDatabase(database.db, nodeId),
@@ -154,19 +158,7 @@ describe.each(engines)("%s APNs deletion transaction", (engine) => {
           clearApnsRegistrationIfCurrent({ nodeId, registration, baseDir: fixture.root }),
         ).rejects.toThrow("APNs registration version exhausted");
       } else if (caller === "standalone pairing") {
-        expect(() =>
-          admit(() =>
-            persistDevicePairingStoreState(
-              {
-                pendingById: {},
-                pairedByDeviceId: {},
-              },
-              fixture.root,
-              "paired",
-              { clearApnsNodeIds: [nodeId] },
-            ),
-          ),
-        ).toThrow("APNs registration version exhausted");
+        expect(() => persistPairing({}, [nodeId])).toThrow("APNs registration version exhausted");
       } else {
         await expect(removePairedDevice(nodeId, fixture.root)).rejects.toThrow(
           "APNs registration version exhausted",

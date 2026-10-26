@@ -1,3 +1,4 @@
+import type { Compilable } from "kysely";
 import { describe, expect, it } from "vitest";
 import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import {
@@ -26,6 +27,13 @@ import { executeSqliteQuerySync } from "../kysely-sync.js";
 import { withEngineStoreAdmission as admit } from "./admission-scope.js";
 import { mixedAgentConnection, useMixedAgentPair } from "./mixed-agent.conformance.test-support.js";
 
+const writeProfile = <Row>(build: (query: ReturnType<typeof userProfilesDb>) => Compilable<Row>) =>
+  admit(() =>
+    runOpenClawStateWriteTransaction(({ db }) =>
+      executeSqliteQuerySync(db, build(userProfilesDb(db))),
+    ),
+  );
+
 describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
   "%s profile authority workers",
   (engine) => {
@@ -48,37 +56,27 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         ).rows[0];
       });
     const seedCustody = (subject: string) =>
-      admit(() =>
-        runOpenClawStateWriteTransaction(({ db }) => {
-          executeSqliteQuerySync(
-            db,
-            userProfilesDb(db)
-              .updateTable("user_profile_identities")
-              .set({
-                authorization_id: `synthetic-custody:${subject}`,
-                authorization_basis_json: "null",
-              })
-              .where("subject", "=", subject),
-          );
-        }),
+      writeProfile((query) =>
+        query
+          .updateTable("user_profile_identities")
+          .set({
+            authorization_id: `synthetic-custody:${subject}`,
+            authorization_basis_json: "null",
+          })
+          .where("subject", "=", subject),
       );
 
     it("persists and removes coauthor preferences through the state worker", async () => {
       const person = profile("coauthor");
-      await expect(
-        setCanonicalUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: true }),
-      ).resolves.toMatchObject({ ok: true });
-      await expect(getCanonicalUserPreferences(person.id)).resolves.toEqual({
-        profileId: person.id,
-        entries: { [GIT_COAUTHOR_PREFERENCE_KEY]: true },
-      });
-      await expect(
-        setCanonicalUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: null }),
-      ).resolves.toMatchObject({ ok: true });
-      await expect(getCanonicalUserPreferences(person.id)).resolves.toEqual({
-        profileId: person.id,
-        entries: {},
-      });
+      for (const value of [true, null]) {
+        await expect(
+          setCanonicalUserPreferences(person.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: value }),
+        ).resolves.toMatchObject({ ok: true });
+        await expect(getCanonicalUserPreferences(person.id)).resolves.toEqual({
+          profileId: person.id,
+          entries: value === null ? {} : { [GIT_COAUTHOR_PREFERENCE_KEY]: true },
+        });
+      }
     });
 
     it("changes a role through the state worker and clears recovery custody", async () => {
@@ -97,16 +95,8 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
 
     it("reads the stored role through the role authority worker", async () => {
       const person = profile("role-read");
-      admit(() =>
-        runOpenClawStateWriteTransaction(({ db }) => {
-          executeSqliteQuerySync(
-            db,
-            userProfilesDb(db)
-              .updateTable("user_profiles")
-              .set({ role: "reviewer" })
-              .where("id", "=", person.id),
-          );
-        }),
+      writeProfile((query) =>
+        query.updateTable("user_profiles").set({ role: "reviewer" }).where("id", "=", person.id),
       );
       const context = captureOpenClawStateWorkerContext({});
       await expect(
