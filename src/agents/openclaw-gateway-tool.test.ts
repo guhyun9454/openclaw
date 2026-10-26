@@ -13,6 +13,7 @@ const { callGatewayToolMock } = vi.hoisted(() => ({
   callGatewayToolMock: vi.fn(),
 }));
 
+// mock-isolation: Config projection tests provide RPC results without connecting to a Gateway.
 vi.mock("./tools/gateway.js", () => ({
   callGatewayTool: callGatewayToolMock,
   readGatewayCallOptions: () => ({}),

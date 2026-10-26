@@ -4,6 +4,7 @@ const resolveGoogleChatAccount = vi.hoisted(() => vi.fn());
 const sendGoogleChatMessage = vi.hoisted(() => vi.fn());
 const resolveGoogleChatOutboundSpace = vi.hoisted(() => vi.fn());
 
+// mock-isolation: Action fixtures provide account selection without loading real credentials.
 vi.mock("./accounts.js", () => ({
   inspectGoogleChatAccount: vi.fn(),
   listGoogleChatAccountIds: vi.fn(),

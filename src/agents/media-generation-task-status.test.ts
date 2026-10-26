@@ -16,6 +16,7 @@ const { listOperations } = vi.hoisted(() => ({
   listOperations: vi.fn<typeof listMediaGenerationOperations>(),
 }));
 
+// mock-isolation: Status fixtures supply task rows without reading the live operation registry.
 vi.mock("./media-generation-activity.js", () => ({
   listMediaGenerationOperations: listOperations,
 }));

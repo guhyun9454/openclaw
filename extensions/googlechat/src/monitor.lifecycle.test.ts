@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   runTurn: vi.fn<(params: { adapter: { resolveTurn: () => { cfg: OpenClawConfig } } }) => void>(),
 }));
 
+// mock-isolation: Lifecycle tests own ingress start/stop and dispatch without a live channel queue.
 vi.mock("./monitor-ingress.js", () => ({
   createGoogleChatIngressMonitor: (params: IngressOptions) => {
     mocks.ingressFactory(params);
@@ -27,6 +28,7 @@ vi.mock("./monitor-ingress.js", () => ({
   },
 }));
 
+// mock-isolation: Capture target registration without installing process-wide webhook routes.
 vi.mock("./monitor-routing.js", () => ({
   registerGoogleChatWebhookTarget: mocks.registerTarget,
   setGoogleChatWebhookEventProcessor: vi.fn(),
