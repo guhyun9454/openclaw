@@ -9,12 +9,11 @@ import { ChatNotice } from "./chat-divider.tsx";
 
 let container: HTMLDivElement;
 let noticeView: { update: (props: Parameters<typeof ChatNotice>[0]) => void } | undefined;
-const query = <T extends Element = HTMLElement>(selector: string): T | null =>
-  container.querySelector<T>(selector);
+const query = (selector: string) => container.querySelector<HTMLElement>(selector);
 const part = (name: string) => query(`.chat-run-failure__${name}`);
-const retry = () => query<HTMLButtonElement>(".chat-run-failure__retry")?.click();
+const retry = () => query(".chat-run-failure__retry")?.click();
 async function copy(summary: string) {
-  query<HTMLButtonElement>('button[aria-label="Copy error"]')?.click();
+  query('button[aria-label="Copy error"]')?.click();
   await vi.advanceTimersByTimeAsync(0);
   expect(writeText).toHaveBeenCalledExactlyOnceWith(summary);
 }
@@ -108,7 +107,7 @@ it("updates text and callbacks without closing expanded details", async () => {
     { failureActionsRunId: "run-a", onRetryRun: nextRetry },
   );
   expect(query("openclaw-chat-run-failure-notice")).toBe(host);
-  expect(query<HTMLDetailsElement>("details")?.open).toBe(true);
+  expect(container.querySelector<HTMLDetailsElement>("details")?.open).toBe(true);
   expect(part("summary")?.textContent).toBe(
     "Automatic recovery has stopped. Check any completed work before trying again.",
   );

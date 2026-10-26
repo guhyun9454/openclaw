@@ -8,10 +8,8 @@ import { mountChatPaneHeader, renderPaneHeaderInto } from "./chat-pane-header.te
 const containers: HTMLElement[] = [];
 afterEach(() => containers.splice(0).forEach((container) => container.remove()));
 
-const find = <T extends HTMLElement = HTMLElement>(
-  container: Element,
-  selector: string,
-): T | null => container.querySelector<T>(`.chat-pane__${selector}`);
+const find = (container: Element, selector: string) =>
+  container.querySelector<HTMLElement>(`.chat-pane__${selector}`);
 
 function fixture() {
   const request = vi.fn(async () => ({}));
@@ -56,7 +54,7 @@ it("keeps roster chrome while allowing an inline rename", () => {
   expect(container.querySelector("[role=dialog]")).toBeNull();
   expect(find(container, "crumbs")).toBeNull();
   update({ editing: true, renameValue: "Updated conversation" });
-  const input = find<HTMLInputElement>(container, "session-title-input")!;
+  const input = container.querySelector<HTMLInputElement>(".chat-pane__session-title-input")!;
   expect(input.value).toBe("Updated conversation");
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   expect(props.onCommitRename).toHaveBeenCalledOnce();
