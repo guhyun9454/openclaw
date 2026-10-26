@@ -7,6 +7,8 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import * as version from "../version.js";
 import * as bundles from "./worker-environments/bundle.js";
+import type { WorkerConnectionIdentity } from "./worker-environments/connection-identity.js";
+import { createWorkerConnectionIdentity } from "./worker-environments/connection-identity.test-support.js";
 import * as bootstrapArtifacts from "./worker-environments/node-bootstrap-artifact.js";
 import type {
   createWorkerEnvironmentService,
@@ -58,10 +60,35 @@ async function withWorkerRuntime(run: () => Promise<void>) {
     const startup = await loadGatewayWorkerEnvironmentStartupState();
     const registry = createEmptyPluginRegistry();
     await createWorkerStartupRuntime(startup, () => registry);
-    expect(mocks.createTools).not.toHaveBeenCalled();
     await run();
   });
 }
+
+it("loads Gateway tools lazily and binds each requested surface", async () => {
+  await withWorkerRuntime(async () => {
+    expect(mocks.service.ready).toHaveBeenCalledOnce();
+    expect(mocks.createTools).not.toHaveBeenCalled();
+    const createGatewayTools = mocks.options?.createGatewayTools;
+    if (!createGatewayTools) {
+      throw new Error("worker tool-surface callback was not composed");
+    }
+    const identity: WorkerConnectionIdentity = createWorkerConnectionIdentity(null, {
+      credentialHash: "credential",
+      bundleHash: "bundle",
+      credentialExpiresAtMs: Date.now() + 60_000,
+    });
+    const results = await Promise.all([
+      createGatewayTools({ identity }),
+      createGatewayTools({ identity }),
+    ]);
+    expect(results).toEqual([[], []]);
+    expect(results[0]).not.toBe(results[1]);
+    expect(mocks.createTools).toHaveBeenCalledTimes(2);
+    expect(mocks.createTools).toHaveBeenCalledWith(
+      expect.objectContaining({ identity, environments: mocks.service }),
+    );
+  });
+});
 
 it.each(["success", "failure", "abort"] as const)(
   "cold artifact preparation overlaps without late publication (outcome=%s)",

@@ -1,8 +1,9 @@
+import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnResult } from "../process/exec-result.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 
-const { detect, readRelease, launch, success } = vi.hoisted(() => {
+const { detect, execFile, readRelease, launch, success } = vi.hoisted(() => {
   const result: SpawnResult = {
     stdout: "",
     stderr: "",
@@ -14,6 +15,7 @@ const { detect, readRelease, launch, success } = vi.hoisted(() => {
   return {
     success: result,
     detect: vi.fn<typeof import("./detect-binary.js").detectBinary>(async () => false),
+    execFile: vi.fn<(file: string, args: readonly string[]) => string>(() => ""),
     readRelease: vi.fn<() => Promise<string>>(),
     launch: vi.fn<typeof import("../process/exec.js").runCommandWithTimeout>(async () => result),
   };
@@ -24,7 +26,7 @@ vi.mock("./detect-binary.js", () => ({ detectBinary: detect }));
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  return { ...actual, execFileSync: () => "" };
+  return { ...actual, execFileSync: execFile };
 });
 
 // mock-isolation: Observe opener commands without launching host applications.
@@ -74,6 +76,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   detect.mockReset().mockResolvedValue(false);
+  execFile.mockReset().mockReturnValue("");
   readRelease.mockReset().mockResolvedValue("6.8.0-generic");
   launch.mockReset().mockResolvedValue(success);
 });
@@ -95,7 +98,6 @@ describe("openLocalFile", () => {
 
     await expect(openLocalFile("C:\\Temp\\handoff.html")).resolves.toBe(true);
     const argv = launch.mock.calls[0]![0];
-    expect(argv[0]).toMatch(/\\System32\\rundll32\.exe$/u);
     expect(argv.at(-2)).toBe("url.dll,FileProtocolHandler");
     expect(argv.at(-1)).toBe("file:///C:/Temp/handoff.html");
   });
@@ -111,28 +113,10 @@ describe("openLocalFile", () => {
 });
 
 describe("browser support and launch", () => {
-  it.each([
-    ["linux", "", "", null],
-    ["linux", "", "192.0.2.1 12345 192.0.2.2 22", null],
-    ["darwin", "", "192.0.2.1 12345 192.0.2.2 22", "open"],
-    ["linux", "localhost:10.0", "192.0.2.1 12345 192.0.2.2 22", "xdg-open"],
-  ] as const)(
-    "resolves %s opener with display=%s SSH=%s",
-    async (platform, display, ssh, command) => {
-      mockProcessPlatform(platform);
-      vi.stubEnv("DISPLAY", display);
-      vi.stubEnv("SSH_CONNECTION", ssh);
-      detect.mockImplementation(async (binary) => binary === command);
-      await expect(detectSupport()).resolves.toEqual({ ok: command !== null });
-      await expect(openUrl(url)).resolves.toBe(command !== null);
-      if (command) {
-        expect(detect).toHaveBeenCalledWith(command);
-        openedWith(command, url);
-      } else {
-        expect(launch).not.toHaveBeenCalled();
-      }
-    },
-  );
+  it("reports a missing display on native Linux", async () => {
+    mockProcessPlatform("linux");
+    await expect(detectSupport()).resolves.toEqual({ ok: false });
+  });
 
   it("reports display-less WSL support only when wslview is installed", async () => {
     detect.mockImplementation(async (binary) => binary === "wslview");
@@ -146,5 +130,44 @@ describe("browser support and launch", () => {
 
     detect.mockResolvedValue(false);
     await expect(detectSupport()).resolves.toEqual({ ok: false });
+  });
+
+  it("prefers the registry-backed Windows system root over process env", async () => {
+    vi.spyOn(fs, "accessSync").mockImplementation(() => undefined);
+    execFile.mockImplementation((_file: string, args: readonly string[]) =>
+      args[3] === "SystemRoot" ? "SystemRoot    REG_SZ    D:\\Windows\r\n" : "",
+    );
+    mockProcessPlatform("win32");
+    vi.stubEnv("SystemRoot", "C:\\PoisonedWindows");
+
+    await expect(openUrl(url)).resolves.toBe(true);
+
+    openedWith("D:\\Windows\\System32\\rundll32.exe", "url.dll,FileProtocolHandler", url);
+  });
+
+  it.each([
+    ["darwin", "", "open"],
+    ["linux", "localhost:10.0", "xdg-open"],
+  ] as const)(
+    "launches %s browser over SSH with display %s",
+    async (platform, display, command) => {
+      mockProcessPlatform(platform);
+      vi.stubEnv("SSH_CONNECTION", "192.0.2.1 12345 192.0.2.2 22");
+      vi.stubEnv("DISPLAY", display);
+      detect.mockImplementation(async (binary) => binary === command);
+
+      await expect(openUrl(url)).resolves.toBe(true);
+      expect(detect).toHaveBeenCalledWith(command);
+      openedWith(command, url);
+    },
+  );
+
+  it("still refuses browser launch over Linux SSH without a display", async () => {
+    mockProcessPlatform("linux");
+    vi.stubEnv("SSH_CONNECTION", "192.0.2.1 12345 192.0.2.2 22");
+
+    await expect(detectSupport()).resolves.toEqual({ ok: false });
+    await expect(openUrl(url)).resolves.toBe(false);
+    expect(launch).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -112,8 +113,10 @@ export function createGitAdmissionFixture(
   const run = (
     options: Partial<Omit<UpdateRunnerOptions, "prepareGitExposure">> = {},
     command: CommandRunner = runCommand,
-  ) =>
-    updateGitCheckout({
+  ) => {
+    const inspected = new Set<string>();
+    let mutationAdmitted = false;
+    return updateGitCheckout({
       gitRoot: install,
       runCommand: command,
       defaultCommandEnv: env,
@@ -122,13 +125,31 @@ export function createGitAdmissionFixture(
       opts: {
         channel: "stable",
         ...options,
-        inspectGitTarget: async (candidate) => options.inspectGitTarget?.(candidate),
-        validateCandidate: async (candidateRoot) => options.validateCandidate?.(candidateRoot),
-        beforeGitMutation: async (candidate) => options.beforeGitMutation?.(candidate),
+        inspectGitTarget: async (candidate) => {
+          assert(candidate.sha);
+          expect(candidate).toEqual(targets.get(candidate.sha));
+          inspected.add(candidate.sha);
+          await options.inspectGitTarget?.(candidate);
+        },
+        validateCandidate: async (candidateRoot) => {
+          expect(mutationAdmitted).toBe(false);
+          expect(inspected.has(git(candidateRoot, "rev-parse", "HEAD"))).toBe(true);
+          expect(fs.statSync(path.join(candidateRoot, "dist", "entry.js")).isFile()).toBe(true);
+          await options.validateCandidate?.(candidateRoot);
+        },
+        beforeGitMutation: async (candidate) => {
+          assert(candidate.sha);
+          expect(inspected.has(candidate.sha)).toBe(true);
+          expect(candidate).toEqual(targets.get(candidate.sha));
+          await options.beforeGitMutation?.(candidate);
+          mutationAdmitted = true;
+        },
         runGitDoctor:
           options.runGitDoctor ??
           (async (installedRoot) => {
+            expect(mutationAdmitted).toBe(true);
             const installedSha = git(installedRoot, "rev-parse", "HEAD");
+            expect(inspected.has(installedSha)).toBe(true);
             const doctor = await runPackageUpdateDoctor({
               root: installedRoot,
               timeoutMs: 15_000,
@@ -148,5 +169,6 @@ export function createGitAdmissionFixture(
           }),
       },
     });
+  };
   return { root, source, install, globalConfig, git, commit, target, calls, runCommand, run };
 }
