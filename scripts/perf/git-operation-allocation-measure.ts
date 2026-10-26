@@ -104,7 +104,9 @@ if (!isMainThread) {
         return result;
       }
       const source =
-        typeof result.source === "string" ? result.source : Buffer.from(result.source!).toString();
+        typeof result.source === "string"
+          ? result.source
+          : new TextDecoder().decode(result.source ?? undefined);
       const call = /serveOwnedWorkerTasks\(handler,\s*options\)/;
       assert(call.test(source), "Git measurement wrapper no longer matches the task server");
       return {
