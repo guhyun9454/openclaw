@@ -1,6 +1,6 @@
-import type { Compilable } from "kysely";
 import { describe, expect, it } from "vitest";
 import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../../packages/gateway-protocol/src/schema/user-profile-constants.js";
+import { sessionSqlFixture } from "../../commands/doctor-session-sqlite.sql.test-support.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -21,18 +21,12 @@ import {
   setCanonicalUserPreferences,
 } from "../../state/user-preferences.js";
 import { setCanonicalUserProfileRole } from "../../state/user-profile-writes.js";
-import { userProfilesDb } from "../../state/user-profiles-internal.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
-import { executeSqliteQuerySync } from "../kysely-sync.js";
 import { withEngineStoreAdmission as admit } from "./admission-scope.js";
 import { mixedAgentConnection, useMixedAgentPair } from "./mixed-agent.conformance.test-support.js";
 
-const writeProfile = <Row>(build: (query: ReturnType<typeof userProfilesDb>) => Compilable<Row>) =>
-  admit(() =>
-    runOpenClawStateWriteTransaction(({ db }) =>
-      executeSqliteQuerySync(db, build(userProfilesDb(db))),
-    ),
-  );
+const writeProfile = (run: (sql: ReturnType<typeof sessionSqlFixture>) => void) =>
+  admit(() => runOpenClawStateWriteTransaction(({ db }) => run(sessionSqlFixture(db))));
 
 describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
   "%s profile authority workers",
@@ -47,23 +41,13 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
     const custody = (subject: string) =>
       admit(() => {
         const { db } = openOpenClawStateDatabase();
-        return executeSqliteQuerySync(
-          db,
-          userProfilesDb(db)
-            .selectFrom("user_profile_identities")
-            .select(["authorization_id", "authorization_basis_json"])
-            .where("subject", "=", subject),
-        ).rows[0];
+        return sessionSqlFixture(db)`SELECT authorization_id, authorization_basis_json
+          FROM user_profile_identities WHERE subject = ${subject}`.get();
       });
     const seedCustody = (subject: string) =>
-      writeProfile((query) =>
-        query
-          .updateTable("user_profile_identities")
-          .set({
-            authorization_id: `synthetic-custody:${subject}`,
-            authorization_basis_json: "null",
-          })
-          .where("subject", "=", subject),
+      writeProfile((sql) =>
+        sql`UPDATE user_profile_identities SET authorization_id = ${`synthetic-custody:${subject}`},
+          authorization_basis_json = 'null' WHERE subject = ${subject}`.run(),
       );
 
     it("persists and removes coauthor preferences through the state worker", async () => {
@@ -79,7 +63,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       }
     });
 
-    it("changes a role through the state worker and clears recovery custody", async () => {
+    it("writes and resolves a role through the state worker and clears recovery custody", async () => {
       const person = profile("role-custody");
       const channel = identity("role-custody");
       await changeCanonicalUserChannelIdentity("link", person.id, channel);
@@ -91,13 +75,6 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         role: "reviewer",
       });
       expect(custody(subject)).toEqual({ authorization_id: null, authorization_basis_json: null });
-    });
-
-    it("reads the stored role through the role authority worker", async () => {
-      const person = profile("role-read");
-      writeProfile((query) =>
-        query.updateTable("user_profiles").set({ role: "reviewer" }).where("id", "=", person.id),
-      );
       const context = captureOpenClawStateWorkerContext({});
       await expect(
         runOpenClawStateWorkerOperation(
@@ -112,7 +89,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       ).resolves.toMatchObject({ profileId: person.id, role: "reviewer" });
     });
 
-    it("lists linked identities and reads a persisted channel authorization", async () => {
+    it("persists channel authority until its policy changes", async () => {
       const person = profile("channel-auth");
       const channel = identity("channel-auth");
       await publishCanonicalUserChannelPolicy(undefined);
@@ -138,6 +115,10 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       await expect(
         prepareUserChannelIdentityAuthority({ authorizationId: reference.id, policy }),
       ).resolves.toMatchObject({ linked: { profileId: person.id, authorization: { reference } } });
+      const subject = userChannelIdentitySubject(channel);
+      seedCustody(subject);
+      await publishCanonicalUserChannelPolicy({ roles: { definitions: {}, default: "member" } });
+      expect(custody(subject)).toEqual({ authorization_id: null, authorization_basis_json: null });
     });
 
     it("reads configured command owner policy through the state reader", async () => {
@@ -145,17 +126,6 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       await expect(
         prepareConfiguredCommandOwnerAuthority(["synthetic-owner"]),
       ).resolves.toMatchObject({ recoveryReference: { version: 2, id: expect.any(String) } });
-    });
-
-    it("clears persisted channel custody when its policy changes", async () => {
-      const person = profile("policy-custody");
-      const channel = identity("policy-custody");
-      await publishCanonicalUserChannelPolicy(undefined);
-      await changeCanonicalUserChannelIdentity("link", person.id, channel);
-      const subject = userChannelIdentitySubject(channel);
-      seedCustody(subject);
-      await publishCanonicalUserChannelPolicy({ roles: { definitions: {}, default: "member" } });
-      expect(custody(subject)).toEqual({ authorization_id: null, authorization_basis_json: null });
     });
   },
 );

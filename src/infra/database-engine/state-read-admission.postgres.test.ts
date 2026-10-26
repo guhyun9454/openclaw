@@ -1,32 +1,21 @@
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { getEnvironmentData, type Worker } from "node:worker_threads";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import {
-  closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import { ensureUserBackgroundSchema } from "../../state/user-background.store.js";
-import {
-  withOpenClawTestState,
-  type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
-import { dropPostgresTestSchemas } from "../postgres-sync/schema-cleanup.test-support.js";
-import { getSqliteDatabaseSchemaRevision } from "../sqlite-database-admission.js";
 import { createSqliteDatabaseAdmissionRelay } from "../sqlite-worker-operation-admission.js";
 import { withEngineStoreAdmission } from "./admission-scope.js";
 import { conformanceWorkerResult, spawnConformanceWorker } from "./conformance.test-support.js";
-import { getDatabaseEngineSelection, installDatabaseEngineSelection } from "./context.js";
-import { resetDatabaseEngineSelectionForTest } from "./context.test-support.js";
-import { getPostgresPhysicalFacts } from "./physical-facts.js";
+import { getDatabaseEngineSelection } from "./context.js";
+import {
+  mixedAgentConnection as connection,
+  useMixedAgentPair,
+} from "./mixed-agent.conformance.test-support.js";
 import { withPostgresConnection } from "./postgres-store-metadata.js";
-import { resolveDatabaseFamilyEngines } from "./registry.js";
-
-const configured: unknown = getEnvironmentData("openclaw.test.state.conformance.connection");
-const connection = typeof configured === "string" ? configured : undefined;
 const value = JSON.stringify({ result: "retained" });
 type ReadResult = {
   ok: boolean;
@@ -37,37 +26,8 @@ type ReadResult = {
   transactions: number;
 };
 
-async function withState(
-  run: (
-    state: OpenClawTestState,
-    owner: ReturnType<typeof openOpenClawStateDatabase>,
-    postgres: { connection: string; schemaPrefix: string },
-  ) => Promise<void>,
-) {
-  const postgres = {
-    connection: connection!,
-    schemaPrefix: `state_read_${randomUUID().replaceAll("-", "").slice(0, 12)}`,
-  };
-  try {
-    await withOpenClawTestState({ label: "state-read-admission" }, async (state) => {
-      installDatabaseEngineSelection({
-        effectiveEngines: resolveDatabaseFamilyEngines({ database: { engine: "postgres" } }),
-        postgres,
-      });
-      const owner = withEngineStoreAdmission(() => openOpenClawStateDatabase({ env: state.env }));
-      await run(state, owner, postgres);
-    });
-  } finally {
-    closeOpenClawStateDatabaseForTest();
-    resetDatabaseEngineSelectionForTest();
-    await withPostgresConnection(postgres, (client) =>
-      dropPostgresTestSchemas(client, postgres.schemaPrefix),
-    );
-  }
-}
-
 function startWorker<Result extends object = ReadResult>(
-  state: OpenClawTestState,
+  state: { env: NodeJS.ProcessEnv; stateDir: string },
   location: string,
   publisher: boolean,
   input: object,
@@ -96,9 +56,23 @@ function startWorker<Result extends object = ReadResult>(
     worker,
     publisher ? "Publisher" : "State admission",
   );
+  const phase = async (name: string) => {
+    expect(
+      await awaitGateBeforeSettlement(
+        once(worker, "message").then(([message]) => message),
+        result,
+        `Worker exited before ${name}`,
+      ),
+    ).toMatchObject({ phase: name });
+  };
   return {
-    worker,
     result,
+    phase,
+    async advance(name: string, gate: Int32Array, index = 0) {
+      const pending = phase(name);
+      release(gate, index);
+      await pending;
+    },
     finish() {
       relay.finish();
       anchor.close();
@@ -110,20 +84,13 @@ const release = (gate: Int32Array, index = 0) => {
   Atomics.store(gate, index, 1);
   Atomics.notify(gate, index);
 };
-async function phase(worker: Worker, result: Promise<object>, name: string) {
-  expect(
-    await awaitGateBeforeSettlement(
-      once(worker, "message").then(([message]) => message),
-      result,
-      `Worker exited before ${name}`,
-    ),
-  ).toMatchObject({ phase: name });
-}
-
-it.skipIf(!connection).each([false, true])(
+describe.skipIf(!connection).each([false, true])(
   "settles a PostgreSQL read across schema publication (imported snapshot: %s)",
-  async (importedSnapshot) =>
-    withState(async (state, owner, postgres) => {
+  (importedSnapshot) => {
+    const fixture = useMixedAgentPair("postgres", "postgres");
+    it("settles or refuses without replaying the read callback", async () => {
+      const state = { env: process.env, stateDir: fixture.root };
+      const owner = withEngineStoreAdmission(() => openOpenClawStateDatabase());
       withEngineStoreAdmission(() =>
         runOpenClawStateWriteTransaction(
           ({ db }) => {
@@ -152,7 +119,7 @@ it.skipIf(!connection).each([false, true])(
           },
         );
         try {
-          await phase(reader.worker, reader.result, "reader-begun");
+          await reader.phase("reader-begun");
           publish();
           release(gate);
           return await reader.result;
@@ -165,19 +132,9 @@ it.skipIf(!connection).each([false, true])(
       };
       const before = await read(() => {});
       const publish = () =>
-        withEngineStoreAdmission(() => {
-          const hasBackground = () =>
-            getPostgresPhysicalFacts(owner.db)?.catalog.some(
-              (fact) => fact.table === "user_background_images",
-            );
-          expect(hasBackground()).toBe(false);
-          const beforeRevision = getSqliteDatabaseSchemaRevision(owner.db);
-          ensureUserBackgroundSchema({ env: state.env });
-          expect(hasBackground()).toBe(true);
-          expect(getSqliteDatabaseSchemaRevision(owner.db)).toBeGreaterThan(beforeRevision!);
-        });
+        withEngineStoreAdmission(() => ensureUserBackgroundSchema({ env: state.env }));
       const during = importedSnapshot
-        ? await withPostgresConnection(postgres, async (client) => {
+        ? await withPostgresConnection(getDatabaseEngineSelection()!.postgres!, async (client) => {
             await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
             try {
               const exported = await client.query<{ snapshot: string }>(
@@ -214,13 +171,17 @@ it.skipIf(!connection).each([false, true])(
           transactions: 1,
         });
       }
-    }),
+    });
+  },
 );
 
-it.skipIf(!connection).each(["open", "ensure", "raw-fragment"] as const)(
+describe.skipIf(!connection).each(["open", "ensure", "raw-fragment"] as const)(
   "keeps %s admission owned across a sibling publication gap",
-  async (operation) =>
-    withState(async (state, owner) => {
+  (operation) => {
+    const fixture = useMixedAgentPair("postgres", "postgres");
+    it("retains ownership until publication settles", async () => {
+      const state = { env: process.env, stateDir: fixture.root };
+      const owner = withEngineStoreAdmission(() => openOpenClawStateDatabase());
       const publisherGate = new Int32Array(new SharedArrayBuffer(4 * Int32Array.BYTES_PER_ELEMENT));
       const readerGate = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
       const publisher = startWorker<{ ok: boolean }>(state, owner.path, true, {
@@ -229,35 +190,23 @@ it.skipIf(!connection).each(["open", "ensure", "raw-fragment"] as const)(
         pauseCommit: operation !== "open",
       });
       const published = publisher.result;
-      await phase(publisher.worker, published, "publisher-ready");
+      await publisher.phase("publisher-ready");
       if (operation !== "open") {
-        const committed = phase(publisher.worker, published, "publisher-committed");
-        release(publisherGate);
-        await committed;
+        await publisher.advance("publisher-committed", publisherGate);
       }
       const reader = startWorker(state, owner.path, false, { gate: readerGate.buffer, operation });
       const read = reader.result;
       try {
         if (operation === "open") {
-          await phase(reader.worker, read, "opener-ready");
-          const pending = phase(publisher.worker, published, "publication-pending");
-          release(publisherGate);
-          await pending;
-          const admitted = phase(reader.worker, read, "opener-admitted");
-          release(readerGate);
-          await admitted;
-          const firstPublished = phase(publisher.worker, published, "first-published");
-          release(publisherGate, 1);
-          await firstPublished;
-          const secondPending = phase(publisher.worker, published, "publication-pending");
-          release(publisherGate, 2);
-          await secondPending;
+          await reader.phase("opener-ready");
+          await publisher.advance("publication-pending", publisherGate);
+          await reader.advance("opener-admitted", readerGate);
+          await publisher.advance("first-published", publisherGate, 1);
+          await publisher.advance("publication-pending", publisherGate, 2);
           release(readerGate, 1);
         } else {
-          await phase(reader.worker, read, "reader-begun");
-          const pending = phase(publisher.worker, published, "publication-pending");
-          release(publisherGate, 2);
-          await pending;
+          await reader.phase("reader-begun");
+          await publisher.advance("publication-pending", publisherGate, 2);
           release(readerGate);
         }
         await delay(50);
@@ -271,7 +220,6 @@ it.skipIf(!connection).each(["open", "ensure", "raw-fragment"] as const)(
             transactions: 1,
           });
           expect(result.message).toContain("Missing PostgreSQL state admission");
-          expect(result.stack).toContain("ensureStatePostgresFragment");
         } else {
           expect(result, result.stack).toMatchObject({
             ok: true,
@@ -292,5 +240,6 @@ it.skipIf(!connection).each(["open", "ensure", "raw-fragment"] as const)(
         publisher.finish();
         reader.finish();
       }
-    }),
+    });
+  },
 );

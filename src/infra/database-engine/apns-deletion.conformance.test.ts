@@ -1,7 +1,7 @@
 import { channel } from "node:diagnostics_channel";
 import { describe, expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
-import type { DB } from "../../state/openclaw-state-db.generated.js";
+import { sessionSqlFixture } from "../../commands/doctor-session-sqlite.sql.test-support.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -13,11 +13,6 @@ import {
   type DevicePairingStoreState,
 } from "../device-pairing-store.js";
 import { removePairedDevice } from "../device-pairing.js";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-} from "../kysely-sync.js";
 import { clearApnsRegistrationFromDatabase } from "../push-apns-store-transaction.js";
 import {
   clearApnsRegistrationIfCurrent,
@@ -40,25 +35,10 @@ function seed(database: OpenClawStateDatabase, nodeId: string, version: number, 
   };
   runOpenClawStateWriteTransaction(
     ({ db }) => {
-      const query = getNodeSqliteKysely<DB>(db);
-      executeSqliteQuerySync(
-        db,
-        query.insertInto("apns_registrations").values({
-          node_id: nodeId,
-          transport: "direct",
-          token: registration.token,
-          topic: registration.topic,
-          environment: registration.environment,
-          updated_at_ms: version,
-        }),
-      );
-      executeSqliteQuerySync(
-        db,
-        query.insertInto("apns_registration_tombstones").values({
-          node_id: nodeId,
-          deleted_at_ms: tombstone,
-        }),
-      );
+      const sql = sessionSqlFixture(db);
+      sql`INSERT INTO apns_registrations (node_id, transport, token, topic, environment, updated_at_ms)
+        VALUES (${nodeId}, 'direct', ${registration.token}, ${registration.topic}, ${registration.environment}, ${version})`.run();
+      sql`INSERT INTO apns_registration_tombstones (node_id, deleted_at_ms) VALUES (${nodeId}, ${tombstone})`.run();
     },
     { database },
   );
@@ -66,13 +46,9 @@ function seed(database: OpenClawStateDatabase, nodeId: string, version: number, 
 }
 
 function readTombstone(database: OpenClawStateDatabase, nodeId: string) {
-  return executeSqliteQueryTakeFirstSync(
+  return sessionSqlFixture(
     database.db,
-    getNodeSqliteKysely<DB>(database.db)
-      .selectFrom("apns_registration_tombstones")
-      .select("deleted_at_ms")
-      .where("node_id", "=", nodeId),
-  );
+  )`SELECT deleted_at_ms FROM apns_registration_tombstones WHERE node_id = ${nodeId}`.get();
 }
 
 const engines = mixedAgentConnection ? (["sqlite", "postgres"] as const) : (["sqlite"] as const);
