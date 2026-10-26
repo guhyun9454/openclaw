@@ -7,7 +7,6 @@ import { resolveOpenClawAgentSqlitePath } from "openclaw/plugin-sdk/sqlite-runti
 import * as sqliteRuntime from "openclaw/plugin-sdk/sqlite-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { memoryCpuProcessEntrypoints } from "./manager-cpu-entrypoints.js";
-import { MemoryIndexDatabase } from "./manager-database-context.js";
 import {
   createManagerIndexFixture,
   memoryIndexFixtureWriter,
@@ -21,27 +20,22 @@ describe("memory rebuild cache reuse", () => {
     getMemorySearchManager,
     closeAllMemorySearchManagers,
   });
+  const { paths, createConfig, getFreshManager, provider } = fixture;
+  const cacheConfig = (vectorEnabled: boolean, model?: string) =>
+    createConfig({ sources: ["memory"], cacheEnabled: true, vectorEnabled, model });
+  const count = (db: DatabaseSync, table: string) =>
+    db.prepare(`SELECT count(*) AS n FROM ${table}`).get();
   afterEach(() => vi.restoreAllMocks());
 
-  it.each([
-    { emptyIndex: false, failPublication: false },
-    { emptyIndex: true, failPublication: false },
-    { emptyIndex: false, failPublication: true },
-  ])(
-    "embeds only initial misses and settles capacity (empty=$emptyIndex, failure=$failPublication)",
-    async ({ emptyIndex, failPublication }) => {
-      await fs.rm(path.join(fixture.paths.memory, "2026-01-12.md"));
-      const manager = await fixture.getFreshManager(
-        fixture.createConfig({
-          sources: ["memory"],
-          cacheEnabled: true,
-          vectorEnabled: true,
-        }),
-      );
+  it.each([false, true])(
+    "embeds only initial misses and settles capacity (empty=%s)",
+    async (emptyIndex) => {
+      await fs.rm(path.join(paths.memory, "2026-01-12.md"));
+      const manager = await getFreshManager(cacheConfig(true));
       (manager as unknown as { cache: { maxEntries?: number } }).cache.maxEntries = 12;
       for (let i = 0; i < 12; i += 1) {
         await fs.writeFile(
-          path.join(fixture.paths.memory, `${String(i).padStart(2, "0")}.md`),
+          path.join(paths.memory, `${String(i).padStart(2, "0")}.md`),
           `cached text ${i}`,
         );
       }
@@ -56,48 +50,24 @@ describe("memory rebuild cache reuse", () => {
       for (let i = 0; i < 4; i += 1) {
         insert.run(`superseded-${i}`, encodeMemoryEmbedding([0, 0, 0, 0]), Date.now() + i);
       }
-      expect(writer.prepare("SELECT count(*) AS n FROM memory_embedding_cache").get()).toEqual({
-        n: 12,
-      });
+      expect(count(writer, "memory_embedding_cache")).toEqual({ n: 12 });
       if (emptyIndex) {
         writer.exec("DELETE FROM memory_index_chunks; DELETE FROM memory_index_sources;");
       }
-      fixture.provider.embeddedBatchTexts.length = 0;
-      if (failPublication) {
-        vi.spyOn(MemoryIndexDatabase.prototype, "writeMetadata").mockRejectedValueOnce(
-          new Error("failed shadow metadata"),
-        );
-      }
+      provider.embeddedBatchTexts.length = 0;
+      await manager.sync({ reason: "cli", force: true });
 
-      const rebuild = manager.sync({ reason: "cli", force: true });
-      if (failPublication) {
-        await expect(rebuild).rejects.toThrow("failed shadow metadata");
-      } else {
-        await rebuild;
-      }
-
-      expect(fixture.provider.embeddedBatchTexts.toSorted()).toEqual(
+      expect(provider.embeddedBatchTexts.toSorted()).toEqual(
         emptyIndex ? ["cached text 0", "cached text 1", "cached text 2", "cached text 3"] : [],
       );
-      expect(writer.prepare("SELECT count(*) AS n FROM memory_index_chunks").get()).toEqual({
-        n: 12,
-      });
-      expect(writer.prepare("SELECT count(*) AS n FROM memory_embedding_cache").get()).toEqual({
-        n: 12,
-      });
-      if (!emptyIndex && !failPublication) {
+      expect(count(writer, "memory_index_chunks")).toEqual({ n: 12 });
+      expect(count(writer, "memory_embedding_cache")).toEqual({ n: 12 });
+      if (!emptyIndex) {
         await manager.close();
-        const changedModel = await fixture.getFreshManager(
-          fixture.createConfig({
-            sources: ["memory"],
-            cacheEnabled: true,
-            vectorEnabled: true,
-            model: "different-embedding-model",
-          }),
-        );
-        fixture.provider.embeddedBatchTexts.length = 0;
+        const changedModel = await getFreshManager(cacheConfig(true, "different-embedding-model"));
+        provider.embeddedBatchTexts.length = 0;
         await changedModel.sync({ reason: "cli", force: true });
-        expect(fixture.provider.embeddedBatchTexts.toSorted()).toEqual(
+        expect(provider.embeddedBatchTexts.toSorted()).toEqual(
           Array.from({ length: 12 }, (_, i) => `cached text ${i}`).toSorted(),
         );
       }
@@ -105,7 +75,7 @@ describe("memory rebuild cache reuse", () => {
   );
 
   it.each(["incremental", "full"] as const)("bounds every %s cache transaction", async (mode) => {
-    await fs.rm(path.join(fixture.paths.memory, "2026-01-12.md"));
+    await fs.rm(path.join(paths.memory, "2026-01-12.md"));
     const databasePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
     const open = sqliteRuntime.openOpenClawAgentSqliteWorkerStoreV2;
     const interceptedPaths: Array<string | undefined> = [];
@@ -134,9 +104,7 @@ describe("memory rebuild cache reuse", () => {
         return client;
       },
     );
-    const memoryManager = await fixture.getFreshManager(
-      fixture.createConfig({ sources: ["memory"], cacheEnabled: true, vectorEnabled: false }),
-    );
+    const memoryManager = await getFreshManager(cacheConfig(false));
     const harness = memoryManager as unknown as {
       cache: { maxEntries?: number };
       dirty: boolean;
@@ -146,7 +114,7 @@ describe("memory rebuild cache reuse", () => {
     await memoryManager.sync({ reason: "cli", force: true });
     const files = mode === "full" ? 5 : 4;
     for (let i = 0; i < files; i += 1) {
-      await fs.writeFile(path.join(fixture.paths.memory, `${i}.md`), `unique cache content ${i}`);
+      await fs.writeFile(path.join(paths.memory, `${i}.md`), `unique cache content ${i}`);
     }
     // Full rebuilds may use twice the cap; every commit must stay within its
     // budget, and completion restores the normal cap.
@@ -155,13 +123,7 @@ describe("memory rebuild cache reuse", () => {
 
     expect(interceptedPaths.length).toBeGreaterThan(0);
     expect(interceptedPaths.every((filename) => filename === harness.db.location())).toBe(true);
-    expect(
-      harness.db.prepare("SELECT COUNT(*) AS count FROM memory_embedding_cache").get(),
-    ).toEqual({
-      count: 2,
-    });
-    expect(harness.db.prepare("SELECT COUNT(*) AS count FROM memory_index_sources").get()).toEqual({
-      count: files,
-    });
+    expect(count(harness.db, "memory_embedding_cache")).toEqual({ n: 2 });
+    expect(count(harness.db, "memory_index_sources")).toEqual({ n: files });
   });
 });

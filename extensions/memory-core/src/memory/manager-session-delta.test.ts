@@ -1,10 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { publishSessionTranscriptUpdateByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   createManagerIndexFixture,
   readPublishedSessionIndex,
 } from "./manager-index.test-support.js";
+import type { MemoryIndexManager } from "./manager.js";
 
 const { activity } = await vi.hoisted(() => import("./agent-activity.test-support.js"));
 
@@ -16,16 +17,39 @@ describe("memory session delta publication", () => {
     closeAllMemorySearchManagers,
   });
   const { createConfig, getFreshManager, seedSessionTranscript } = fixture;
-
-  it("yields an interrupted pass and indexes every pending session after the next quiet period", async () => {
+  beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    onTestFinished(() => {
-      vi.useRealTimers();
-    });
+    onTestFinished(() => vi.useRealTimers());
+  });
+  async function openManager(cacheEnabled?: boolean) {
     const manager = await getFreshManager(
-      createConfig({ sources: ["sessions"], sessionMemory: true, cacheEnabled: true }),
+      createConfig({
+        sources: ["sessions"],
+        sessionMemory: true,
+        cacheEnabled,
+      }),
     );
     onTestFinished(() => manager.close());
+    return manager;
+  }
+  async function settle(manager: MemoryIndexManager, milliseconds = 30_000) {
+    await vi.advanceTimersByTimeAsync(milliseconds);
+    await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
+  }
+  function interruptEmbedding() {
+    fixture.provider.beforeEmbedBatch = async () => {
+      fixture.provider.beforeEmbedBatch = null;
+      activity.listener?.(true);
+    };
+  }
+  const seed = (session: { sessionId: string; sessionKey: string }, content: string) =>
+    seedSessionTranscript({
+      ...session,
+      messages: [{ role: "user", timestamp: Date.now(), content }],
+    });
+
+  it("yields an interrupted pass and indexes every pending session after the next quiet period", async () => {
+    const manager = await openManager(true);
     await manager.sync({ reason: "initial", force: true });
     const database = Reflect.get(manager, "db") as DatabaseSync;
     const sessions = Array.from({ length: 9 }, (_, index) => ({
@@ -33,37 +57,23 @@ describe("memory session delta publication", () => {
       sessionKey: `agent:main:chat:resume-${index}`,
     }));
     for (const session of sessions) {
-      await seedSessionTranscript({
-        ...session,
-        messages: [
-          {
-            role: "user",
-            timestamp: Date.now(),
-            content: `resumeproof alpha ${session.sessionId}`,
-          },
-        ],
-      });
+      await seed(session, `resumeproof alpha ${session.sessionId}`);
       await publishSessionTranscriptUpdateByIdentity({ agentId: "main", ...session });
     }
-    fixture.provider.beforeEmbedBatch = async () => {
-      fixture.provider.beforeEmbedBatch = null;
-      activity.listener?.(true);
-    };
+    interruptEmbedding();
     const indexedPaths = () =>
       database
         .prepare("SELECT path FROM memory_index_sources WHERE source = 'sessions' ORDER BY path")
         .all();
 
-    await vi.advanceTimersByTimeAsync(30_000);
-    await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
+    await settle(manager);
     expect(fixture.provider.embedBatchCalls).toBeGreaterThan(0);
     expect(indexedPaths()).toEqual([]);
 
     activity.listener?.(false);
     await vi.advanceTimersByTimeAsync(29_999);
     expect(indexedPaths()).toEqual([]);
-    await vi.advanceTimersByTimeAsync(1);
-    await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
+    await settle(manager, 1);
     expect(indexedPaths()).toEqual(
       sessions.map(({ sessionId }) => ({ path: `sessions/main/${sessionId}.jsonl` })),
     );
@@ -78,19 +88,9 @@ describe("memory session delta publication", () => {
   });
 
   it("keeps the published index when a background rebuild is interrupted", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    onTestFinished(() => {
-      vi.useRealTimers();
-    });
     const session = { sessionId: "rebuild", sessionKey: "agent:main:chat:rebuild" };
-    await seedSessionTranscript({
-      ...session,
-      messages: [{ role: "user", timestamp: Date.now(), content: "stableproof original" }],
-    });
-    const manager = await getFreshManager(
-      createConfig({ sources: ["sessions"], sessionMemory: true }),
-    );
-    onTestFinished(() => manager.close());
+    await seed(session, "stableproof original");
+    const manager = await openManager();
     await manager.sync({ reason: "initial", force: true });
     const database = Reflect.get(manager, "db") as DatabaseSync;
     const before = readPublishedSessionIndex(
@@ -98,26 +98,18 @@ describe("memory session delta publication", () => {
       "sessions/main/rebuild.jsonl",
       "stableproof",
     );
-    await seedSessionTranscript({
-      ...session,
-      messages: [{ role: "user", timestamp: Date.now(), content: "newproof appended" }],
-    });
+    await seed(session, "newproof appended");
     Reflect.set(manager, "memoryFullRetryDirty", true);
-    fixture.provider.beforeEmbedBatch = async () => {
-      fixture.provider.beforeEmbedBatch = null;
-      activity.listener?.(true);
-    };
+    interruptEmbedding();
     await publishSessionTranscriptUpdateByIdentity({ agentId: "main", ...session });
-    await vi.advanceTimersByTimeAsync(30_000);
-    await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
+    await settle(manager);
     expect(
       readPublishedSessionIndex(database, "sessions/main/rebuild.jsonl", "stableproof"),
     ).toEqual(before);
     expect(manager.status().dirty).toBe(true);
 
     activity.listener?.(false);
-    await vi.advanceTimersByTimeAsync(30_000);
-    await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
+    await settle(manager);
     expect(
       readPublishedSessionIndex(database, "sessions/main/rebuild.jsonl", "newproof").search,
     ).not.toEqual([]);
@@ -125,10 +117,6 @@ describe("memory session delta publication", () => {
   });
 
   it("settles ten queued turns incrementally with the same search results as a full reindex", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    onTestFinished(() => {
-      vi.useRealTimers();
-    });
     const sessionId = "growing-session";
     const sessionKey = `agent:main:chat:${sessionId}`;
     const sessionPath = `sessions/main/${sessionId}.jsonl`;
@@ -138,9 +126,7 @@ describe("memory session delta publication", () => {
       timestamp: Date.now(),
       content: `turnmarker${index} ` + `topic${index} detail `.repeat(400),
     });
-    const cfg = createConfig({ sources: ["sessions"], sessionMemory: true, cacheEnabled: false });
-    const manager = await getFreshManager(cfg);
-    onTestFinished(() => manager.close());
+    const manager = await openManager(false);
     await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
     await seedSessionTranscript({ sessionId, sessionKey, messages: [1, 2, 3, 4].map(turn) });
     await manager.sync({ reason: "initial", force: true });
@@ -157,8 +143,7 @@ describe("memory session delta publication", () => {
     }
     expect(readPublishedSessionIndex(database, sessionPath, "turnmarker14").search).toEqual([]);
     expect(fixture.provider.embeddedBatchTexts).toEqual([]);
-    await vi.advanceTimersByTimeAsync(30_000);
-    await (manager as unknown as { awaitManagerIdle(): Promise<void> }).awaitManagerIdle();
+    await settle(manager);
 
     const after = readPublishedSessionIndex(database, sessionPath, "turnmarker14");
     expect(after.search).not.toEqual([]);
