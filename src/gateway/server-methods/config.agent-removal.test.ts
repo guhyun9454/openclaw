@@ -98,36 +98,23 @@ describe("config.patch explicit agent removal", () => {
     expect(Object.keys(current.agents!.entries!)).toEqual(["keep", "first", "second"]);
   });
 
-  it.each([undefined, "stale-hash"])(
-    "rejects removal with baseHash %s before committing",
-    async (baseHash) => {
-      const respond = await invoke(
-        { agents: { entries: { first: null } } },
-        { baseHash, replacePaths },
-      );
-      expect(respond).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: "INVALID_REQUEST" }),
-      );
-      expect(mocks.commit).not.toHaveBeenCalled();
-      expect(persisted).toBeUndefined();
-    },
-  );
-
-  it("still requires acknowledgment of arrays inside a removed entry", async () => {
-    const respond = await invoke(
-      { agents: { entries: { first: null } } },
-      { baseHash: "base-hash" },
-    );
+  it.each([
+    ["missing revision", undefined, replacePaths, { first: null }, undefined],
+    ["stale revision", "stale-hash", replacePaths, { first: null }, undefined],
+    ["unacknowledged arrays", "base-hash", undefined, { first: null }, "replacePaths"],
+    ["deleted roster", "base-hash", replacePaths, null, undefined],
+  ] as const)("rejects %s before committing", async (_name, baseHash, paths, entries, message) => {
+    const respond = await invoke({ agents: { entries } }, { baseHash, replacePaths: paths });
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,
       expect.objectContaining({
-        message: expect.stringContaining("replacePaths"),
+        code: "INVALID_REQUEST",
+        ...(message ? { message: expect.stringContaining(message) } : {}),
       }),
     );
     expect(mocks.commit).not.toHaveBeenCalled();
+    expect(persisted).toBeUndefined();
   });
 
   it("does not authorize omitted siblings during ordinary entry updates", async () => {
@@ -142,19 +129,5 @@ describe("config.patch explicit agent removal", () => {
         entries: { ...current.agents!.entries, keep: { name: "Renamed" } },
       },
     });
-  });
-
-  it("rejects deleting the keyed roster container before committing", async () => {
-    const respond = await invoke(
-      { agents: { entries: null } },
-      { baseHash: "base-hash", replacePaths },
-    );
-    expect(mocks.commit).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ code: "INVALID_REQUEST" }),
-    );
-    expect(persisted).toBeUndefined();
   });
 });

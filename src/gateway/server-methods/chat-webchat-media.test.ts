@@ -43,33 +43,26 @@ describe("webchat audio blocks through assistant messages", () => {
     return { audioPath, localRoot: tmpDir };
   }
 
-  it("preserves voice-note metadata on local audio attachments", async () => {
-    const { audioPath, localRoot } = writeAudioFixture();
-
-    const blocks = await localAudio(audioPath, localRoot, { audioAsVoice: true });
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toMatchObject({
-      type: "attachment",
-      attachment: { isVoiceNote: true },
-    });
-  });
-
-  it("skips non-audio local files", async () => {
-    const { audioPath, localRoot } = writeAudioFixture([0x89, 0x50, 0x4e, 0x47], ".png");
-    const blocks = await localAudio(audioPath, localRoot);
-    expect(blocks).toHaveLength(0);
+  it.each([
+    ["voice note", ".mp3", true, 1],
+    ["non-audio file", ".png", false, 0],
+  ] as const)("embeds only audio (%s)", async (_name, extension, audioAsVoice, count) => {
+    const bytes = audioAsVoice ? undefined : [0x89, 0x50, 0x4e, 0x47];
+    const { audioPath, localRoot } = writeAudioFixture(bytes, extension);
+    const blocks = await localAudio(audioPath, localRoot, { audioAsVoice });
+    expect(blocks).toHaveLength(count);
+    if (audioAsVoice) {
+      expect(blocks[0]).toMatchObject({ type: "attachment", attachment: { isVoiceNote: true } });
+    }
   });
 
   it("dedupes repeated paths", async () => {
     const { audioPath, localRoot } = writeAudioFixture([0x00]);
 
-    const blocks = await buildWebchatAudioBlocks(
-      [
-        { mediaUrl: audioPath, trustedLocalMedia: true },
-        { mediaUrl: audioPath, trustedLocalMedia: true },
-      ],
-      { localRoots: [localRoot] },
-    );
+    const payload = { mediaUrl: audioPath, trustedLocalMedia: true };
+    const blocks = await buildWebchatAudioBlocks([payload, { ...payload }], {
+      localRoots: [localRoot],
+    });
     expect(blocks).toHaveLength(1);
   });
 

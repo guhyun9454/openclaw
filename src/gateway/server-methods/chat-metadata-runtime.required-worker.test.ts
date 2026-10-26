@@ -25,6 +25,26 @@ const models = ["worker-model", "other-model"].map((id) => ({
   available: false,
   unavailableReason: "missing-auth",
 }));
+type Harness = ReturnType<typeof createChatMetadataHarness>;
+const mainScope = { agentId: "main", sessionKey: "agent:main:main" };
+async function withMetadata(
+  cfg: OpenClawConfig,
+  run: (harness: Harness) => Promise<void>,
+  catalog = models,
+) {
+  const harness = createChatMetadataHarness(cfg);
+  harness.buildProjection.mockResolvedValue({ modelCatalog: catalog, models: catalog });
+  try {
+    await harness.runtime.refresh();
+    await run(harness);
+  } finally {
+    await harness.runtime.stop();
+  }
+}
+
+async function expectModels(harness: Harness, expected = models) {
+  expect((await harness.runtime.read(mainScope)).models).toEqual(expected);
+}
 
 test("publishes cold pinned startup commands without retaining worker policy across refresh", async () => {
   const cfg = structuredClone(config);
@@ -65,10 +85,7 @@ test("publishes cold pinned startup commands without retaining worker policy acr
 });
 
 test("required worker chat metadata admits cold main and bookmarked sessions without Gateway auth", async () => {
-  const harness = createChatMetadataHarness(config);
-  harness.buildProjection.mockResolvedValue({ modelCatalog: models, models });
-  try {
-    await harness.runtime.refresh();
+  await withMetadata(config, async (harness) => {
     for (const scope of [
       { agentId: "main", sessionKey: "agent:main:main" },
       { agentId: "main", sessionKey: "agent:main:bookmark", sessionEntry: { sessionId: "saved" } },
@@ -92,9 +109,7 @@ test("required worker chat metadata admits cold main and bookmarked sessions wit
       ).models,
     ).toEqual(models);
     expect(models[0]).toHaveProperty("unavailableReason", "missing-auth");
-  } finally {
-    await harness.runtime.stop();
-  }
+  });
 });
 
 test.each(["missing", "gateway", "invalid-provider", "no-device", "optional"])(
@@ -116,31 +131,13 @@ test.each(["missing", "gateway", "invalid-provider", "no-device", "optional"])(
     if (kind === "optional") {
       delete cfg.cloudWorkers!.requiredProfile;
     }
-    const harness = createChatMetadataHarness(cfg);
-    harness.buildProjection.mockResolvedValue({ modelCatalog: models, models });
-    try {
-      await harness.runtime.refresh();
-      expect(
-        (await harness.runtime.read({ agentId: "main", sessionKey: "agent:main:main" })).models,
-      ).toEqual(models);
-    } finally {
-      await harness.runtime.stop();
-    }
+    await withMetadata(cfg, (harness) => expectModels(harness));
   },
 );
 
 test("scopes worker metadata to the saved selection and preserves non-auth availability", async () => {
-  const harness = createChatMetadataHarness(config);
   const cooldown = models.map((model) => ({ ...model, unavailableReason: "cooldown" }));
-  harness.buildProjection.mockResolvedValue({ modelCatalog: cooldown, models: cooldown });
-  try {
-    await harness.runtime.refresh();
-    expect(
-      (await harness.runtime.read({ agentId: "main", sessionKey: "agent:main:main" })).models,
-    ).toEqual(cooldown);
-  } finally {
-    await harness.runtime.stop();
-  }
+  await withMetadata(config, (harness) => expectModels(harness, cooldown), cooldown);
 });
 
 test.each([
@@ -149,10 +146,7 @@ test.each([
   { agentRuntimeOverride: "openclaw" },
   { agentHarnessId: "codex", modelSelectionLocked: true, agentRuntimeOverride: "openclaw" },
 ])("retains upstream availability for explicit runtime selection %j", async (sessionEntry) => {
-  const harness = createChatMetadataHarness(config);
-  harness.buildProjection.mockResolvedValue({ modelCatalog: models, models });
-  try {
-    await harness.runtime.refresh();
+  await withMetadata(config, async (harness) => {
     const result = await harness.runtime.read({
       agentId: "main",
       sessionKey: "agent:main:saved",
@@ -161,7 +155,5 @@ test.each([
     // Required placement is intent, not a grant for explicit runtime/account choices.
     // Preserve the clients-stack overlay's explicit-selection checks.
     expect(result.models).toEqual(models);
-  } finally {
-    await harness.runtime.stop();
-  }
+  });
 });

@@ -52,51 +52,47 @@ const commit = (exists = true) =>
     ...(exists ? { awaitRuntimeApplication: true } : {}),
   });
 
-it("awaits transcript additions and title edits only when the reload owner can apply them", () => {
-  const previousConfig: OpenClawConfig = {
-    transcripts: { autoStart: [{ providerId: "fixture", sessionId: "daily", title: "Before" }] },
-  };
-  const nextConfig: OpenClawConfig = {
-    transcripts: { autoStart: [{ providerId: "fixture", sessionId: "daily", title: "After" }] },
-  };
-  const params = { previousConfig, nextConfig, changedPaths: ["transcripts.autoStart"] };
-  expect(shouldAwaitGatewayConfigApplication(params)).toBe(true);
-  expect(shouldAwaitGatewayConfigApplication({ ...params, previousConfig: {} })).toBe(true);
-  expect(
-    shouldAwaitGatewayConfigApplication({
-      ...params,
-      changedPaths: [...params.changedPaths, "gateway.port"],
-    }),
-  ).toBe(false);
-  expect(
-    shouldAwaitGatewayConfigApplication({
-      ...params,
-      nextConfig: { ...nextConfig, gateway: { reload: { mode: "off" } } },
-    }),
-  ).toBe(false);
+const transcriptConfig = (title: string): OpenClawConfig => ({
+  transcripts: { autoStart: [{ providerId: "fixture", sessionId: "daily", title }] },
 });
-
+const previousConfig = transcriptConfig("Before");
+const nextConfig = transcriptConfig("After");
+const changedPaths = ["transcripts.autoStart"];
+const restartPaths = [...changedPaths, "gateway.port"];
+const reloadOffConfig: OpenClawConfig = { ...nextConfig, gateway: { reload: { mode: "off" } } };
 it.each([
-  ["hybrid", true],
-  ["off", false],
+  ["title edit", previousConfig, nextConfig, changedPaths, true],
+  ["transcript addition", {}, nextConfig, changedPaths, true],
+  ["restart", previousConfig, nextConfig, restartPaths, false],
+  ["disabled reload", previousConfig, reloadOffConfig, changedPaths, false],
 ] as const)(
-  "awaits cold-storage settings only when reload mode %s can apply them",
-  (mode, awaited) => {
+  "awaits %s only when the reload owner can apply it",
+  (_name, previous, next, paths, awaited) => {
     expect(
       shouldAwaitGatewayConfigApplication({
-        previousConfig: {},
-        nextConfig: {
-          gateway: { reload: { mode } },
-          session: { maintenance: { coldStorage: { enabled: true, afterDays: 7 } } },
-        },
-        changedPaths: [
-          "session.maintenance.coldStorage.enabled",
-          "session.maintenance.coldStorage.afterDays",
-        ],
+        previousConfig: previous,
+        nextConfig: next,
+        changedPaths: paths,
       }),
     ).toBe(awaited);
   },
 );
+
+it.each(["hybrid", "off"] as const)("awaits cold-storage settings with %s reload", (mode) => {
+  expect(
+    shouldAwaitGatewayConfigApplication({
+      previousConfig: {},
+      nextConfig: {
+        gateway: { reload: { mode } },
+        session: { maintenance: { coldStorage: { enabled: true, afterDays: 7 } } },
+      },
+      changedPaths: [
+        "session.maintenance.coldStorage.enabled",
+        "session.maintenance.coldStorage.afterDays",
+      ],
+    }),
+  ).toBe(mode !== "off");
+});
 
 describe("commitGatewayConfigWrite", () => {
   beforeEach(() => {
