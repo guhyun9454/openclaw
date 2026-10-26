@@ -113,10 +113,28 @@ describe("openLocalFile", () => {
 });
 
 describe("browser support and launch", () => {
-  it("reports a missing display on native Linux", async () => {
-    mockProcessPlatform("linux");
-    await expect(detectSupport()).resolves.toEqual({ ok: false });
-  });
+  it.each([
+    ["linux", "", "", null],
+    ["linux", "", "192.0.2.1 12345 192.0.2.2 22", null],
+    ["darwin", "", "192.0.2.1 12345 192.0.2.2 22", "open"],
+    ["linux", "localhost:10.0", "192.0.2.1 12345 192.0.2.2 22", "xdg-open"],
+  ] as const)(
+    "resolves %s opener with display=%s SSH=%s",
+    async (platform, display, ssh, command) => {
+      mockProcessPlatform(platform);
+      vi.stubEnv("DISPLAY", display);
+      vi.stubEnv("SSH_CONNECTION", ssh);
+      detect.mockImplementation(async (binary) => binary === command);
+      await expect(detectSupport()).resolves.toEqual({ ok: command !== null });
+      await expect(openUrl(url)).resolves.toBe(command !== null);
+      if (command) {
+        expect(detect).toHaveBeenCalledWith(command);
+        openedWith(command, url);
+      } else {
+        expect(launch).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("reports display-less WSL support only when wslview is installed", async () => {
     detect.mockImplementation(async (binary) => binary === "wslview");
@@ -143,31 +161,5 @@ describe("browser support and launch", () => {
     await expect(openUrl(url)).resolves.toBe(true);
 
     openedWith("D:\\Windows\\System32\\rundll32.exe", "url.dll,FileProtocolHandler", url);
-  });
-
-  it.each([
-    ["darwin", "", "open"],
-    ["linux", "localhost:10.0", "xdg-open"],
-  ] as const)(
-    "launches %s browser over SSH with display %s",
-    async (platform, display, command) => {
-      mockProcessPlatform(platform);
-      vi.stubEnv("SSH_CONNECTION", "192.0.2.1 12345 192.0.2.2 22");
-      vi.stubEnv("DISPLAY", display);
-      detect.mockImplementation(async (binary) => binary === command);
-
-      await expect(openUrl(url)).resolves.toBe(true);
-      expect(detect).toHaveBeenCalledWith(command);
-      openedWith(command, url);
-    },
-  );
-
-  it("still refuses browser launch over Linux SSH without a display", async () => {
-    mockProcessPlatform("linux");
-    vi.stubEnv("SSH_CONNECTION", "192.0.2.1 12345 192.0.2.2 22");
-
-    await expect(detectSupport()).resolves.toEqual({ ok: false });
-    await expect(openUrl(url)).resolves.toBe(false);
-    expect(launch).not.toHaveBeenCalled();
   });
 });

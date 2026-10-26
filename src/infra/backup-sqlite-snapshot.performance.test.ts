@@ -9,12 +9,19 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { withBackupFixture, withDatabase } from "./backup-create-family.test-support.js";
+import { backupCase, withDatabase } from "./backup-create-family.test-support.js";
 import { createBackupArchive } from "./backup-create.js";
 import { listArchiveEntries } from "./backup-create.test-support.js";
 import { createBackupSqliteSnapshotPlan } from "./backup-sqlite-snapshot.js";
 
 const PRIVACY_MARKER = ".openclaw-private-update-capture";
+const withFixture = backupCase({ prefix: "openclaw-backup-discovery-" });
+const writeFiles = (directory: string, count: number, extension: string) =>
+  Promise.all(
+    Array.from({ length: count }, (_, index) =>
+      fs.writeFile(path.join(directory, `generated-${index}.${extension}`), "export {};\n"),
+    ),
+  );
 async function countProbes<T>(matches: (target: string) => boolean, run: () => Promise<T>) {
   let probes = 0;
   const original = fsSync.lstatSync.bind(fsSync);
@@ -45,33 +52,32 @@ afterEach(() => {
 describe.skipIf(process.platform === "win32")("backup SQLite discovery performance", () => {
   it.skipIf(process.getuid?.() === 0)(
     "skips unreadable excluded siblings of a protected config",
-    async () => {
-      await withBackupFixture({ prefix: "openclaw-backup-excluded-sibling-" }, async (state) => {
-        const configPath = state.statePath("tmp", "openclaw.json");
-        const excludedPath = state.statePath("tmp", "cache.bin");
-        await fs.mkdir(path.dirname(configPath), { recursive: true });
-        await fs.copyFile(state.configPath, configPath);
-        await fs.writeFile(excludedPath, "excluded cache");
-        await fs.chmod(excludedPath, 0);
-        vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
-        try {
-          await expect(fs.readFile(excludedPath)).rejects.toMatchObject({ code: "EACCES" });
-          const archive = await createBackupArchive({
-            output: state.path("backup.tar.gz"),
-            includeWorkspace: false,
-          });
-          const entries = await listArchiveEntries(archive.archivePath);
-          expect(entries.some((entry) => entry.endsWith("/tmp/openclaw.json"))).toBe(true);
-          expect(entries.some((entry) => entry.endsWith("/tmp/cache.bin"))).toBe(false);
-        } finally {
-          await fs.chmod(excludedPath, 0o600);
-        }
-      });
-    },
+    withFixture(async (state) => {
+      const configPath = state.statePath("tmp", "openclaw.json");
+      const excludedPath = state.statePath("tmp", "cache.bin");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.copyFile(state.configPath, configPath);
+      await fs.writeFile(excludedPath, "excluded cache");
+      await fs.chmod(excludedPath, 0);
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+      try {
+        await expect(fs.readFile(excludedPath)).rejects.toMatchObject({ code: "EACCES" });
+        const archive = await createBackupArchive({
+          output: state.path("backup.tar.gz"),
+          includeWorkspace: false,
+        });
+        const entries = await listArchiveEntries(archive.archivePath);
+        expect(entries.some((entry) => entry.endsWith("/tmp/openclaw.json"))).toBe(true);
+        expect(entries.some((entry) => entry.endsWith("/tmp/cache.bin"))).toBe(false);
+      } finally {
+        await fs.chmod(excludedPath, 0o600);
+      }
+    }),
   );
 
-  it("keeps privacy admission proportional to worktree directories while archiving dirty files", async () => {
-    await withBackupFixture({ prefix: "openclaw-backup-worktree-discovery-" }, async (state) => {
+  it(
+    "keeps privacy admission proportional to worktree directories while archiving dirty files",
+    withFixture(async (state) => {
       openOpenClawStateDatabase({ env: state.env });
       closeOpenClawStateDatabase();
 
@@ -122,13 +128,7 @@ describe.skipIf(process.platform === "win32")("backup SQLite discovery performan
 
       const baseline = await measurePrivacyMarkerProbes("baseline");
       const durableFile = path.join(sourceDirectories[0]!, "uncommitted.ts");
-      await Promise.all(
-        sourceDirectories.flatMap((directory) =>
-          Array.from({ length: 40 }, (_, fileIndex) =>
-            fs.writeFile(path.join(directory, `generated-${fileIndex}.ts`), "export {};\n"),
-          ),
-        ),
-      );
+      await Promise.all(sourceDirectories.map((directory) => writeFiles(directory, 40, "ts")));
       await fs.writeFile(durableFile, "export const keep = true;\n");
 
       const populated = await measurePrivacyMarkerProbes("populated");
@@ -143,11 +143,7 @@ describe.skipIf(process.platform === "win32")("backup SQLite discovery performan
       }
       const packageDirectory = state.statePath("node_modules", "root-dep");
       await fs.mkdir(packageDirectory, { recursive: true });
-      await Promise.all(
-        Array.from({ length: 8 }, (_, index) =>
-          fs.writeFile(path.join(packageDirectory, `module-${index}.js`), "export {};\n"),
-        ),
-      );
+      await writeFiles(packageDirectory, 8, "js");
       const spawn = vi.spyOn(childProcess, "spawnSync");
       const { probes: fileProbes, result: archive } = await countProbes(
         (target) => target === durableFile,
@@ -161,11 +157,11 @@ describe.skipIf(process.platform === "win32")("backup SQLite discovery performan
       // Global capture discovers aliases before the final, registry-backed inventory.
       expect(headerProbes).toHaveLength(2);
       const entries = await listArchiveEntries(archive.archivePath);
-      expect(entries.some((entry) => entry.endsWith("/node_modules/root-dep/module-7.js"))).toBe(
+      expect(entries.some((entry) => entry.endsWith("/node_modules/root-dep/generated-7.js"))).toBe(
         true,
       );
       const archivedDirtyFile = `/${worktreeRelative}/packages/package-0/src/uncommitted.ts`;
       expect(entries.some((entry) => entry.endsWith(archivedDirtyFile))).toBe(true);
-    });
-  });
+    }),
+  );
 });
