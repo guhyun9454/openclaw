@@ -49,12 +49,7 @@ describe("session hook runner methods", () => {
         tail,
       );
     };
-    const metadataOnly = vi.fn((_event: unknown, context: unknown) => {
-      expect((context as PluginHookSessionContext).endedTranscript).toEqual({
-        available: false,
-        reason: "conversation-access-required",
-      });
-    });
+    const metadataOnly = vi.fn();
     const { runner } = createHookRunnerWithRegistry([
       readerHook(admitted),
       { hookName: "session_end", pluginId: "metadata", handler: metadataOnly },
@@ -63,7 +58,15 @@ describe("session hook runner methods", () => {
 
     await runner.runSessionEnd(event, context);
 
-    expect(metadataOnly).toHaveBeenCalledOnce();
+    expect(metadataOnly).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({
+        endedTranscript: {
+          available: false,
+          reason: "conversation-access-required",
+        },
+      }),
+    );
     expect(readTail).toHaveBeenCalledOnce();
     assert(retained);
     await expect(retained.readTail(readOptions)).rejects.toThrow("no longer active");
