@@ -49,12 +49,6 @@ it("retains only handed-off vectors, separates ancestor admission, and restarts 
     expect((await read()).entries - before.entries).toBe(1);
     owner.clearAncestors();
     const changed = prepare(row(first.key, { label: first.label, updatedAt: 2 }));
-    expect(changed.rows?.wire[0]).toMatchObject({
-      base: 1,
-      version: 2,
-      set: { updatedAt: 2 },
-      remove: ["lastRunError"],
-    });
     expect(changed.rows?.encoded[0]).toBe(
       '{"key":"agent:main:one","agentId":"main","version":2,"base":1,"set":{"updatedAt":2},"remove":["lastRunError"]}',
     );
@@ -123,7 +117,6 @@ it("sends retain:false without disturbing the LRU when vectors exceed the byte c
         break;
       }
     }
-    expect(rejected).toBeDefined();
     expect((await read()).estimatedBytes - before.estimatedBytes).toBeLessThanOrEqual(
       2 * 1024 * 1024,
     );

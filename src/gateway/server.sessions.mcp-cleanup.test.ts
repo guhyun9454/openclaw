@@ -1,4 +1,5 @@
 // Registered reset/delete must join transports already retired by the MCP idle sweep.
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
 import {
   awaitGateBeforeSettlement,
@@ -33,6 +34,8 @@ afterEach(async () => {
 test.for(["sessions.reset", "sessions.delete"] as const)(
   "%s joins MCP idle disposal before mutating the session",
   async (method, { signal }) => {
+    const beforeSettlement = (gate: Promise<unknown>, work: Promise<unknown>, message: string) =>
+      withinTest(awaitGateBeforeSettlement(gate, work, message), signal);
     const { dir, storePath } = await createSessionStoreDir();
     const sessionId = `idle-mcp-${method}`;
     const sessionKey = "agent:main:idle-mcp-cleanup";
@@ -120,13 +123,10 @@ test.for(["sessions.reset", "sessions.delete"] as const)(
     clock.setTime(lease.runtime.lastUsedAt + 1);
     const sweep = manager.sweepIdleRuntimes();
     pending.push(sweep);
-    await withinTest(
-      awaitGateBeforeSettlement(
-        server.terminationStarted,
-        sweep,
-        "MCP idle sweep settled before disposal started",
-      ),
-      signal,
+    await beforeSettlement(
+      server.terminationStarted,
+      sweep,
+      "MCP idle sweep settled before disposal started",
     );
     expect(manager.peekSession({ sessionId })).toBeUndefined();
     const mutation = directSessionReq(method, { key: sessionKey }).then((result) => {
@@ -137,17 +137,12 @@ test.for(["sessions.reset", "sessions.delete"] as const)(
       return result;
     });
     pending.push(mutation);
-    await withinTest(
-      awaitGateBeforeSettlement(
-        retirementStarted.promise,
-        mutation,
-        "Session cleanup settled before retiring MCP",
-      ),
-      signal,
+    await beforeSettlement(
+      retirementStarted.promise,
+      mutation,
+      "Session cleanup settled before retiring MCP",
     );
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await nextTurn();
     expect(retirementFinished).toBe(false);
     expect(mutationFinished).toBe(false);
     expect(readEntry()).toMatchObject({

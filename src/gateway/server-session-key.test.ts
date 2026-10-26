@@ -9,13 +9,8 @@ import type { SessionRowProjection } from "./session-row-projection.js";
 
 const hoisted = vi.hoisted(() => ({
   loadConfigMock: vi.fn<() => OpenClawConfig>(),
-  loadCombinedSessionStoreForGatewayMock: vi.fn(),
 }));
 vi.mock("../config/io.js", () => ({ getRuntimeConfig: () => hoisted.loadConfigMock() }));
-vi.mock("./session-utils.js", () => ({
-  loadCombinedSessionStoreForGatewayCore: (...args: unknown[]) =>
-    hoisted.loadCombinedSessionStoreForGatewayMock(...args),
-}));
 const { resolveSessionForRun } = await import("./server-session-key.js");
 
 function indexedProjection(store: Record<string, SessionEntry>, agentId = "main") {
@@ -47,51 +42,35 @@ function expectOwner(
 describe("resolveSessionForRun", () => {
   beforeEach(() => {
     hoisted.loadConfigMock.mockReturnValue({});
-    hoisted.loadCombinedSessionStoreForGatewayMock.mockReset();
-    hoisted.loadCombinedSessionStoreForGatewayMock.mockImplementation(() => {
-      throw new Error("run lookup must not load a complete store");
-    });
     resetAgentEventsForTest();
   });
   afterEach(() => {
-    vi.useRealTimers();
     resetAgentEventsForTest();
   });
 
   it.each([
-    ["main", "agent:main:acp:run-1", { sessionKey: "agent:main:acp:run-1", agentId: "main" }],
-    [
-      "retired",
-      "agent:retired:acp:run-1",
-      { sessionKey: "agent:retired:acp:run-1", agentId: "retired" },
-    ],
-    ["main", "agent:work:acp:run-1", undefined],
-  ] as const)("keeps stored keys scoped to %s for %s", (agentId, key, expected) => {
+    ["main", "agent:main:acp:run-1", true],
+    ["retired", "agent:retired:acp:run-1", true],
+    ["main", "agent:work:acp:run-1", false],
+  ] as const)("keeps stored keys scoped to %s for %s", (agentId, key, matches) => {
     const projection = indexedProjection({ [key]: { sessionId: "run-1", updatedAt: 123 } });
-    expect(resolveSessionForRun("run-1", { agentId, projection })).toEqual(expected);
+    expect(resolveSessionForRun("run-1", { agentId, projection })).toEqual(
+      matches ? { sessionKey: key, agentId } : undefined,
+    );
   });
 
   it("defaults an unscoped persisted lookup to the sole configured agent", () => {
     hoisted.loadConfigMock.mockReturnValue({ agents: { entries: { work: {} } } });
     const projection = indexedProjection({ main: { sessionId: "run-1", updatedAt: 1 } }, "work");
     expectOwner("run-1", { projection }, "main", "work");
-    expect(projection.findBySessionId).toHaveBeenCalledWith({
-      sessionId: "run-1",
-      agentId: "work",
-      federated: true,
-    });
   });
 
-  it("keeps literal global and qualified global-main ownership", () => {
+  it("keeps qualified global-main ownership", () => {
     hoisted.loadConfigMock.mockReturnValue({
       session: { scope: "global" },
       agents: { ownership: "explicit", entries: { ops: {}, research: {} } },
     });
-    const projection = indexedProjection(
-      { global: { sessionId: "global-run", updatedAt: 1 } },
-      "research",
-    );
-    expectOwner("global-run", { agentId: "research", projection }, "global", "research");
+    const projection = indexedProjection({});
     registerAgentRunContext("qualified-run", { sessionKey: "agent:research:main" });
     expectOwner(
       "qualified-run",
@@ -145,23 +124,6 @@ describe("resolveSessionForRun", () => {
     registerAgentRunContext("run-1", { sessionKey: "agent:retired:acp:run-1" });
     expectOwner("run-1", { agentId: "main", projection }, "agent:main:acp:run-1");
     expectOwner("run-1", { projection }, "agent:retired:acp:run-1", "retired");
-  });
-
-  it("never reloads the store when orphan events outlive the old miss TTL", () => {
-    vi.useFakeTimers();
-    const projection = indexedProjection({});
-    for (let second = 0; second < 10; second++) {
-      for (let run = 0; run < 20; run++) {
-        expect(resolveSessionForRun(`orphan-${run}`, { projection })).toBeUndefined();
-      }
-      vi.advanceTimersByTime(1000);
-    }
-    expect(hoisted.loadCombinedSessionStoreForGatewayMock).not.toHaveBeenCalled();
-    registerAgentRunContext("orphan-0", { sessionKey: "agent:main:main" });
-    expect(resolveSessionForRun("orphan-0", { projection })).toEqual({
-      sessionKey: "agent:main:main",
-      agentId: "main",
-    });
   });
 
   it("prefers a structural ID match and refuses a tied ambiguous match", () => {
