@@ -228,7 +228,7 @@ suite.define(() => {
         expect(fontState).toContainEqual({ family: "TeamMetric", status: "loaded" });
         const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
         // Use the gutter outside widget frames and sample after native wheel delivery.
-        await thread.hover({ position: { x: 4, y: 4 } });
+        await thread.hover({ position: { x: 16, y: 16 } });
         const coverage = await thread.evaluateHandle((element) => {
           const initialTop = element.scrollTop;
           const padding = getComputedStyle(element);
