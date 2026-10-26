@@ -132,7 +132,7 @@ async function readToolSurface(context: PreparedCliRunContext, signal: AbortSign
 it.for<[string, string, string, string, string[] | undefined]>([
   ["no caller cap", "exec-full", "text", "completed", undefined],
   ["a finite caller cap", "exec-capped", "text", "failed", ["exec", "process", "session_status"]],
-  ["an empty CLI final", "exec-empty", "empty", "failed", undefined],
+  ["an empty CLI final", "exec-empty", "empty", "completed", undefined],
   ["a failed CLI final", "exec-failed", "failed", "failed", undefined],
 ])(
   "retains the CLI surface and enforces completion effects with %s",

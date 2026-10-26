@@ -579,7 +579,7 @@ it.each([
         sessionId: params.sessionId,
       },
       async () => {
-        // Schema projection reads session control authority from this admitted caller.
+        // Execution reads session control authority from this admitted caller.
         expectDefined(getGatewayToolCallerIdentity(), "scheduled caller");
         const tools = applyEmbeddedAttemptToolsAllow(
           await createOpenClawCodingToolsAsync({
@@ -947,8 +947,9 @@ it.each([
       } else if (scenario === "current tool deny") {
         expect(offered).toBeUndefined();
       } else {
-        expect(JSON.stringify(offered)).not.toContain('"inspect"');
-        expect(JSON.stringify(offered)).not.toContain("merge");
+        expect(JSON.stringify(offered)).toContain('"inspect"');
+        expect(JSON.stringify(offered)).toContain("merge");
+        expect(rejected).toBeTruthy();
         expect(results).toEqual([]);
       }
     }
