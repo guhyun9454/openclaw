@@ -82,7 +82,7 @@ it.each([
           : { type: "user", userId: "sender" },
       timestamp: 1_800_000_000_000,
       webhookEventId: "bound-route",
-      message: { type: "text", id: "bound-message", text: "hello helper" },
+      message: { type: "text", id: "bound-message", text: "hello helper", quoteToken: "quote" },
     });
     const processMessage = vi.fn<Parameters<typeof handleLineWebhookEvents>[1]["processMessage"]>(
       async () => {},

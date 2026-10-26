@@ -57,7 +57,9 @@ describe("Codex Computer Use periodic health", () => {
 
     await vi.advanceTimersByTimeAsync(30 * 60_000);
 
-    expectToolCalls(client, 2);
+    expect(
+      client.request.mock.calls.filter(([method]) => method === "mcpServer/tool/call"),
+    ).toHaveLength(2);
     expect(client.request).toHaveBeenCalledWith("config/mcpServer/reload", undefined, {
       timeoutMs: 60_000,
     });

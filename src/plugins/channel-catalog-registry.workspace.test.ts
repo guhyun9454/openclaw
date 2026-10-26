@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { writeJsonFile } from "../../test/helpers/temp-repo.js";
 import { resolveConfigWidePluginMetadataSnapshot } from "../config/io.plugin-metadata.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
@@ -11,7 +12,6 @@ import { resolveInstalledPluginIndexStorePath } from "./installed-plugin-index-s
 import { refreshPersistedInstalledPluginIndex } from "./installed-plugin-index-store-write.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
-import { writeArtifacts } from "./public-surface.test-support.js";
 
 const tempDirs = createTempDirTracker();
 const databasePaths = new Set<string>();
@@ -64,20 +64,19 @@ it("keeps the published install generation across ledger writes until restart", 
 });
 
 function writeChannelPlugin(rootDir: string, id: string): void {
-  writeArtifacts(rootDir, {
-    "index.js": "export default { register() {} };\n",
-    "openclaw.plugin.json": {
-      id,
-      channels: [id],
-      configSchema: { type: "object", properties: {} },
-    },
-    "package.json": {
-      name: id,
-      type: "module",
-      openclaw: {
-        extensions: ["./index.js"],
-        channel: { id, name: id, description: `Synthetic ${id} channel` },
-      },
+  fs.mkdirSync(rootDir, { recursive: true });
+  fs.writeFileSync(path.join(rootDir, "index.js"), "export default { register() {} };\n");
+  writeJsonFile(path.join(rootDir, "openclaw.plugin.json"), {
+    id,
+    channels: [id],
+    configSchema: { type: "object", properties: {} },
+  });
+  writeJsonFile(path.join(rootDir, "package.json"), {
+    name: id,
+    type: "module",
+    openclaw: {
+      extensions: ["./index.js"],
+      channel: { id, name: id, description: `Synthetic ${id} channel` },
     },
   });
 }
@@ -89,7 +88,6 @@ it("keeps channel catalog workspace and load-path scopes after Gateway publicati
   const beta = path.join(root, "beta");
   const extra = path.join(root, "extra");
   writeChannelPlugin(path.join(alpha, ".openclaw/extensions/alpha-channel"), "alpha-channel");
-  writeChannelPlugin(path.join(root, "extensions/alpha-channel"), "alpha-channel");
   writeChannelPlugin(path.join(beta, ".openclaw/extensions/beta-channel"), "beta-channel");
   writeChannelPlugin(extra, "extra-channel");
   const config: OpenClawConfig = {
@@ -97,13 +95,9 @@ it("keeps channel catalog workspace and load-path scopes after Gateway publicati
     plugins: { load: { paths: [extra] } },
   };
   const scopes = [
-    { workspaceDir: alpha, expected: ["alpha-channel", "alpha-channel"] },
-    { workspaceDir: beta, expected: ["alpha-channel", "beta-channel"] },
-    {
-      workspaceDir: alpha,
-      extraPaths: [extra],
-      expected: ["alpha-channel", "alpha-channel", "extra-channel"],
-    },
+    { workspaceDir: alpha, expected: ["alpha-channel"] },
+    { workspaceDir: beta, expected: ["beta-channel"] },
+    { workspaceDir: alpha, extraPaths: [extra], expected: ["alpha-channel", "extra-channel"] },
   ];
   const expectedEntries = scopes.map(({ expected }) => expected);
   const read = () =>
@@ -113,9 +107,6 @@ it("keeps channel catalog workspace and load-path scopes after Gateway publicati
         .toSorted(),
     );
   expect(withPluginCache(createPluginCache(), read)).toEqual(expectedEntries);
-  const origins = () =>
-    listChannelCatalogEntries({ workspaceDir: alpha, env }).map(({ origin }) => origin);
-  expect(origins()).toEqual(["workspace", "global"]);
   const snapshot = resolveConfigWidePluginMetadataSnapshot({ config, env });
   expect(snapshot.plugins.map((plugin) => plugin.id).toSorted()).toEqual([
     "alpha-channel",
@@ -137,11 +128,35 @@ it("keeps channel catalog workspace and load-path scopes after Gateway publicati
   const probes = fileReads.map((method) => vi.spyOn(fs, method));
   expect(read()).toEqual(expectedEntries);
   expect(read()).toEqual(expectedEntries);
-  expect(origins()).toEqual(["workspace", "global"]);
   expect(probes.map((probe) => probe.mock.calls.length)).toEqual(fileReads.map(() => 0));
   vi.restoreAllMocks();
   writeChannelPlugin(path.join(alpha, ".openclaw/extensions/late-channel"), "late-channel");
   expect(read()).toEqual(expectedEntries);
   clearPluginMetadataLifecycleCaches();
-  expect(read()[0]).toEqual(["alpha-channel", "alpha-channel", "late-channel"]);
+  expect(read()[0]).toEqual(["alpha-channel", "late-channel"]);
+});
+
+it("retains raw workspace shadows for catalog trust filtering after publication", () => {
+  const root = tempDirs.make("openclaw-channel-shadow-");
+  const env = { HOME: root, OPENCLAW_STATE_DIR: root, OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" };
+  const workspaceDir = path.join(root, "workspace");
+  writeChannelPlugin(path.join(root, "extensions/shadow-channel"), "shadow-channel");
+  writeChannelPlugin(
+    path.join(workspaceDir, ".openclaw/extensions/shadow-channel"),
+    "shadow-channel",
+  );
+  const config: OpenClawConfig = { agents: { entries: { alpha: { workspace: workspaceDir } } } };
+  const read = () =>
+    listChannelCatalogEntries({ workspaceDir, env }).map(({ pluginId, origin }) => ({
+      pluginId,
+      origin,
+    }));
+  const expected = [
+    { pluginId: "shadow-channel", origin: "workspace" },
+    { pluginId: "shadow-channel", origin: "global" },
+  ];
+  expect(read()).toEqual(expected);
+  const snapshot = resolveConfigWidePluginMetadataSnapshot({ config, env });
+  setGatewayPluginMetadataSnapshot(snapshot, { config, env });
+  expect(read()).toEqual(expected);
 });
