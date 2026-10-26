@@ -109,10 +109,12 @@ it.each(["invalid-path", "not-found"] as const)("redacts a configured %s file", 
 it("distinguishes missing input from an unavailable configured file", () => {
   expect(tryRead()).toEqual({ status: "missing" });
 });
-it("writes a private file with owner-only permissions", async () => {
+it.each([false, true])("writes private files (existing directory: %s)", async (existing) => {
   const dir = await createTempDir();
   const file = path.join(dir, "nested", "auth.json");
-
+  if (existing) {
+    await fsPromises.mkdir(path.dirname(file), { mode: 0o777 });
+  }
   await writeSecret(dir, file);
 
   expect(read(file)).toBe('{"ok":true}');
@@ -121,16 +123,6 @@ it("writes a private file with owner-only permissions", async () => {
       PRIVATE_SECRET_DIR_MODE,
       PRIVATE_SECRET_FILE_MODE,
     ]);
-  }
-});
-
-it("tightens an existing world-readable directory before writing secrets", async () => {
-  const dir = await createTempDir();
-  const nestedDir = path.join(dir, "nested");
-  await fsPromises.mkdir(nestedDir, { mode: 0o777 });
-  if (process.platform !== "win32") {
-    await writeSecret(dir);
-    expect(await mode(nestedDir)).toBe(PRIVATE_SECRET_DIR_MODE);
   }
 });
 

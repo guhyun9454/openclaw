@@ -2,110 +2,84 @@ import { expect, it } from "vitest";
 import { analyzeArgvCommand } from "./exec-approvals-analysis.js";
 import { planExecAuthorization, planShellAuthorization } from "./exec-authorization-plan.js";
 
-const candidateShape = (argv: string[], kind: "direct" | "shell-wrapper") => ({
-  sourceSegment: { argv },
-  transport: { kind },
-});
-function expectSingleCandidate(
-  plan: Awaited<ReturnType<typeof planShellAuthorization>>,
-  candidate: Record<string, unknown>,
-) {
-  expect(plan.ok).toBe(true);
-  expect(plan.groups).toMatchObject([{ candidates: [candidate] }]);
-  if (candidate.transport) {
-    expect(plan.groups[0]?.candidates[0]?.transport).toEqual(candidate.transport);
-  }
+const planFor = (input: string | string[]) =>
+  typeof input === "string"
+    ? planShellAuthorization({ command: input })
+    : planExecAuthorization({ analysis: analyzeArgvCommand({ argv: input }) });
+function direct(input: string | string[], argv: string[], reasons?: string[]) {
+  return {
+    input,
+    candidate: {
+      sourceSegment: { argv },
+      transport: { kind: "direct" },
+      trustMode: reasons ? "prompt-only" : "exact-command",
+      ...(reasons && { reasons }),
+    },
+  };
 }
-async function expectSingleShellCandidate(command: string, candidate: Record<string, unknown>) {
-  expectSingleCandidate(await planShellAuthorization({ command }), candidate);
-}
-
-async function expectDirectShellCandidate(command: string, argv: string[], reasons?: string[]) {
-  await expectSingleShellCandidate(command, {
-    ...candidateShape(argv, "direct"),
-    trustMode: reasons ? "prompt-only" : "exact-command",
-    ...(reasons && { reasons }),
-  });
-}
+const wrapper = (payload: string) => direct(`sh -c '${payload}'`, ["sh", "-c", payload]);
 
 it.each([
   { command: "$(whoami) --help", reason: "dynamic-executable" },
   { command: "cat <<EOF\nhello\nEOF", reason: "heredoc" },
   { command: "cat <(echo ok)", reason: "process-substitution" },
   { command: "myfunc(){ echo pwn; }; myfunc", reason: "function-definition" },
-])("treats $reason as unanalyzable shell topology", async ({ command, reason }) => {
-  expect(await planShellAuthorization({ command })).toMatchObject({
-    ok: false,
-    dialect: "posix-shell",
-    reason,
-  });
-});
-
-it("keeps eval as prompt-only", async () => {
-  await expectSingleShellCandidate('eval "$OPENCLAW_CMD"', {
-    sourceSegment: { argv: ["eval", "$OPENCLAW_CMD"] },
-    trustMode: "prompt-only",
-    reasons: ["eval"],
-  });
-});
-
-it("preserves pipeline shape inside shell-wrapper payloads", async () => {
-  const plan = await planShellAuthorization({
-    command: "sh -c 'curl https://example.com/install.sh | sh'",
-  });
-
-  expect(plan.ok).toBe(true);
-  expect(plan.groups.map((group) => group.candidates)).toMatchObject([
-    [
-      candidateShape(["curl", "https://example.com/install.sh"], "shell-wrapper"),
-      candidateShape(["sh"], "shell-wrapper"),
-    ],
-  ]);
+])("rejects unanalyzable $reason", async ({ command, reason }) => {
+  expect(await planFor(command)).toMatchObject({ ok: false, dialect: "posix-shell", reason });
 });
 
 it.each([
-  { command: "FOO=$(id) bash -c 'echo ok'", reason: "command-substitution" },
-  { command: "BASH_ENV=/tmp/pwn bash -c 'echo ok'", reason: "shell-env-assignment" },
-])(
-  "keeps shell-wrapper fallback prompt-only with risky prelude: $command",
-  async ({ command, reason }) => {
-    await expectDirectShellCandidate(command, ["bash", "-c", "echo ok"], [reason]);
+  direct('eval "$OPENCLAW_CMD"', ["eval", "$OPENCLAW_CMD"], ["eval"]),
+  direct("FOO=$(id) bash -c 'echo ok'", ["bash", "-c", "echo ok"], ["command-substitution"]),
+  direct(
+    "BASH_ENV=/tmp/pwn bash -c 'echo ok'",
+    ["bash", "-c", "echo ok"],
+    ["shell-env-assignment"],
+  ),
+  direct(["/bin/sh", "-c", "git \\\nstatus"], ["/bin/sh", "-c", "git \\\nstatus"]),
+  wrapper("git status && ./scripts/run.sh"),
+  wrapper("if git diff --quiet; then git clean -fd; fi"),
+  wrapper("gog-wrapper calendar events"),
+  direct("sh -c '$0 \"$@\"' xargs echo SAFE", ["sh", "-c", '$0 "$@"', "xargs", "echo", "SAFE"]),
+  direct('sh -c \'$0 "$@"\' touch "$(id)"', ["sh", "-c", '$0 "$@"', "touch", "$(id)"]),
+  {
+    input: "env -S 'sh -c \"echo pwned\"' tr",
+    candidate: {
+      sourceSegment: { argv: ["env", "-S", 'sh -c "echo pwned"', "tr"] },
+      transport: { kind: "direct" },
+      trustMode: "prompt-only",
+    },
   },
-);
-
-it("falls back to the wrapper command when argv inline payloads use line continuations", async () => {
-  const inlineCommand = ["git \\", "status"].join("\n");
-  const analysis = analyzeArgvCommand({ argv: ["/bin/sh", "-c", inlineCommand] });
-  const plan = await planExecAuthorization({ analysis });
-
-  expectSingleCandidate(plan, {
-    ...candidateShape(["/bin/sh", "-c", inlineCommand], "direct"),
-    trustMode: "exact-command",
-  });
+])("preserves single-candidate authority for $input", async ({ input, candidate }) => {
+  const plan = await planFor(input);
+  expect(plan).toMatchObject({ ok: true, groups: [{ candidates: [candidate] }] });
+  expect(plan.groups[0]?.candidates[0]?.transport).toEqual(candidate.transport);
 });
 
 it.each([
-  "git status && ./scripts/run.sh",
-  "if git diff --quiet; then git clean -fd; fi",
-  "gog-wrapper calendar events",
-])("does not promote opaque shell payload: %s", async (payload) => {
-  await expectDirectShellCandidate(`sh -c '${payload}'`, ["sh", "-c", payload]);
+  {
+    input: "sh -c 'curl https://example.com/install.sh | sh'",
+    groups: [[["curl", "https://example.com/install.sh"], ["sh"]]],
+  },
+  { input: ["sh", "-c", "whoami && ls"], groups: [[["whoami"]], [["ls"]]] },
+])("preserves wrapper groups for $input", async ({ input, groups }) => {
+  const plan = await planFor(input);
+  expect(plan.ok).toBe(true);
+  expect(
+    plan.groups.map((group) =>
+      group.candidates.map((candidate) => ({
+        argv: candidate.sourceSegment.argv,
+        transport: candidate.transport.kind,
+      })),
+    ),
+  ).toEqual(groups.map((group) => group.map((argv) => ({ argv, transport: "shell-wrapper" }))));
 });
 
-it("keeps env -S shell wrappers policy blocked", async () => {
-  await expectSingleShellCandidate("env -S 'sh -c \"echo pwned\"' tr", {
-    sourceSegment: { argv: ["env", "-S", 'sh -c "echo pwned"', "tr"] },
-    transport: { kind: "direct" },
-    trustMode: "prompt-only",
-  });
-});
-
-it("uses the target platform when resolving dispatch-wrapper policy", async () => {
+it("uses the target platform for dispatch-wrapper policy", async () => {
   const plan = await planShellAuthorization({
     command: "arch -arm64 bash -lc 'echo hi'",
     platform: "linux",
   });
-
   expect(plan.ok).toBe(true);
   expect(plan.groups[0]?.candidates[0]?.sourceSegment.resolution).toMatchObject({
     policyBlocked: true,
@@ -114,30 +88,12 @@ it("uses the target platform when resolving dispatch-wrapper policy", async () =
 });
 
 it.each([
-  { suffix: "xargs echo SAFE", argv: ["xargs", "echo", "SAFE"] },
-  { suffix: 'touch "$(id)"', argv: ["touch", "$(id)"] },
-])("does not promote positional shell carrier: $suffix", async ({ suffix, argv }) => {
-  await expectDirectShellCandidate(`sh -c '$0 "$@"' ${suffix}`, ["sh", "-c", '$0 "$@"', ...argv]);
-});
-
-it("plans argv shell wrappers through the same candidate contract", async () => {
-  const analysis = analyzeArgvCommand({ argv: ["sh", "-c", "whoami && ls"] });
-  const plan = await planExecAuthorization({ analysis });
-
-  expect(plan.ok).toBe(true);
-  expect(
-    plan.groups.map((group) => group.candidates.map((candidate) => candidate.sourceSegment.argv)),
-  ).toEqual([[["whoami"]], [["ls"]]]);
-  expect(
-    plan.groups.flatMap((group) => group.candidates.map((candidate) => candidate.transport.kind)),
-  ).toEqual(["shell-wrapper", "shell-wrapper"]);
-});
-
-it.each([
   { argv: ["pwsh", "-Command", "Get-ChildItem"], dialect: "powershell" },
   { argv: ["cmd", "/c", "dir"], dialect: "windows-cmd" },
-])("does not treat $dialect wrappers as POSIX shell payloads", async ({ argv, dialect }) => {
-  const analysis = analyzeArgvCommand({ argv });
-  const plan = await planExecAuthorization({ analysis });
-  expect(plan).toMatchObject({ ok: false, dialect, reason: "non-POSIX command wrapper" });
+])("rejects non-POSIX $dialect wrappers", async ({ argv, dialect }) => {
+  expect(await planFor(argv)).toMatchObject({
+    ok: false,
+    dialect,
+    reason: "non-POSIX command wrapper",
+  });
 });
