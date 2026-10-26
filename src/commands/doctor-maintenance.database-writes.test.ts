@@ -19,6 +19,15 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveDoctorUpdateAdmission } from "./doctor-maintenance-admission.js";
 import { beginDoctorRepair } from "./doctor-maintenance.admission.test-support.js";
 
+function runSqlite(pathname: string, script: string) {
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script, pathname], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  expect(child.error).toBeUndefined();
+  return child;
+}
+
 it.each([false, true])(
   "settles native idle WAL close and preserves foreign writes (foreign write: %s)",
   async (foreignWrite) => {
@@ -30,20 +39,13 @@ it.each([false, true])(
         const pathname = openOpenClawStateDatabase({ env: state.env }).path;
         await closeOpenClawStateDatabaseAsync();
         // Retain real idle WAL bookkeeping as after a process exits without native close.
-        const child = spawnSync(
-          process.execPath,
-          [
-            "--input-type=module",
-            "-e",
-            `import { DatabaseSync } from 'node:sqlite';
+        const child = runSqlite(
+          pathname,
+          `import { DatabaseSync } from 'node:sqlite';
            const db = new DatabaseSync(process.argv[1]);
            db.exec('PRAGMA journal_mode=WAL; UPDATE update_runs SET updated_at_ms = updated_at_ms + 1; PRAGMA wal_checkpoint(TRUNCATE)');
            process.kill(process.pid, 'SIGKILL');`,
-            pathname,
-          ],
-          { encoding: "utf8", timeout: 10_000 },
         );
-        expect(child.error).toBeUndefined();
         expect(child.status, child.stderr).not.toBe(0);
         expect(fs.existsSync(`${pathname}-shm`)).toBe(true);
         const databaseGenerations = readUpdateDatabaseGenerations([pathname]);
@@ -64,21 +66,14 @@ it.each([false, true])(
             admission.assertCurrent();
           });
           if (foreignWrite) {
-            const writer = spawnSync(
-              process.execPath,
-              [
-                "--input-type=module",
-                "-e",
-                `import { DatabaseSync } from 'node:sqlite';
+            const writer = runSqlite(
+              pathname,
+              `import { DatabaseSync } from 'node:sqlite';
                const db = new DatabaseSync(process.argv[1]);
                db.prepare('INSERT INTO config_machine_state VALUES (?, ?, ?)')
                  .run('test.foreign-write', '99', 1);
                db.close();`,
-                pathname,
-              ],
-              { encoding: "utf8", timeout: 10_000 },
             );
-            expect(writer.error).toBeUndefined();
             expect(writer.status, writer.stderr).toBe(0);
           }
           await maintenance!.releaseState();

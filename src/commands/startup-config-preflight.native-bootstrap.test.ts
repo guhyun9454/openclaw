@@ -20,6 +20,26 @@ import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runStartupConfigPreflight } from "./startup-config-preflight.js";
 
+async function inspectMigratedCredentials(
+  databasePath: string,
+  env: NodeJS.ProcessEnv,
+  nativeRows: ReturnType<typeof seedMacNodeWorkerProofState>,
+) {
+  await closeOpenClawStateDatabaseAsync();
+  using database = new DatabaseSync(databasePath, { readOnly: true });
+  expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(
+    OPENCLAW_STATE_SCHEMA_VERSION,
+  );
+  expect(readMacNodeWorkerProofRows(database, resolveClientCredentialStorePath(env))).toEqual(
+    nativeRows,
+  );
+  return database
+    .prepare(
+      "SELECT name FROM sqlite_schema WHERE name IN ('device_identities', 'device_auth_tokens', 'gateway_origin_device_tokens')",
+    )
+    .all();
+}
+
 it.each([false, true])(
   "migrates native credentials before webhook readiness (routed root: %s)",
   async (routed) => {
@@ -55,26 +75,9 @@ it.each([false, true])(
         );
         expect(fs.existsSync(resolveClientCredentialStorePath(state.env))).toBe(false);
       }
-      await closeOpenClawStateDatabaseAsync();
-      const database = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(
-          OPENCLAW_STATE_SCHEMA_VERSION,
-        );
-        expect(database.prepare("SELECT boot_id FROM gateway_boot_lifecycle").all()).toEqual([]);
-        expect(
-          readMacNodeWorkerProofRows(database, resolveClientCredentialStorePath(selectedEnv)),
-        ).toEqual(nativeRows);
-        expect(
-          database
-            .prepare(
-              "SELECT name FROM sqlite_schema WHERE name IN ('device_identities', 'device_auth_tokens', 'gateway_origin_device_tokens')",
-            )
-            .all(),
-        ).toEqual([]);
-      } finally {
-        database.close();
-      }
+      expect(await inspectMigratedCredentials(databasePath, selectedEnv, nativeRows)).toEqual([]);
+      using database = new DatabaseSync(databasePath, { readOnly: true });
+      expect(database.prepare("SELECT boot_id FROM gateway_boot_lifecycle").all()).toEqual([]);
     });
   },
 );
@@ -135,18 +138,7 @@ it("admits the recoverable config before migrating native credentials", async ()
       expect(clobbered).toHaveLength(1);
       expect(fs.readFileSync(state.statePath(clobbered[0]!), "utf8")).toBe(original);
       expect(hasActiveStartupMigrationLease()).toBe(false);
-      await closeOpenClawStateDatabaseAsync();
-      const database = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(
-          OPENCLAW_STATE_SCHEMA_VERSION,
-        );
-        expect(
-          readMacNodeWorkerProofRows(database, resolveClientCredentialStorePath(state.env)),
-        ).toEqual(nativeRows);
-      } finally {
-        database.close();
-      }
+      await inspectMigratedCredentials(databasePath, state.env, nativeRows);
     },
   );
 });
