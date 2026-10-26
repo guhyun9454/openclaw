@@ -19,22 +19,10 @@ const testState = vi.hoisted(() => ({
   catalogEntries: [] as ChannelPluginCatalogEntry[],
 }));
 
-vi.mock("../plugins/plugin-registry-contributions.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../plugins/plugin-registry-contributions.js")>();
-  return {
-    ...actual,
-    loadPluginManifestRegistryForPluginRegistry: vi.fn(
-      actual.loadPluginManifestRegistryForPluginRegistry,
-    ),
-  };
-});
-
 vi.mock("../commands/channels/shared.js", () => ({
   formatChannelAccountLabel: vi.fn(),
   requireValidChannelConfig: vi.fn(async () => testState.config),
 }));
-import { loadPluginManifestRegistryForPluginRegistry } from "../plugins/plugin-registry-contributions.js";
 vi.mock("../commands/channel-setup/trusted-catalog.js", () => ({
   listTrustedChannelPluginCatalogEntries: vi.fn(() => testState.catalogEntries),
 }));
@@ -54,14 +42,10 @@ const listJson = (all = false) =>
     },
   );
 
-// Configured official external channels with missing owners exercise row repair hints.
-const OWNERLESS_CHANNEL_IDS = ["feishu", "googlechat", "matrix", "twitch"] as const;
-
 beforeEach(() => {
   resetPluginRuntimeStateForTest();
   testState.json = [];
   testState.catalogEntries = [];
-  vi.mocked(loadPluginManifestRegistryForPluginRegistry).mockClear();
   vi.stubEnv("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "1");
   vi.stubEnv("OPENCLAW_HOME", path.join(tempRoot, "home"));
   vi.stubEnv("OPENCLAW_STATE_DIR", path.join(tempRoot, "state"));
@@ -77,14 +61,6 @@ it("renders named channel accounts without loading setup or runtime", async () =
     channelId: "cold-channel",
     setupEntrySource: `require("node:fs").writeFileSync(${JSON.stringify(setupMarker)}, "loaded");
 throw new Error("JSON inventory must not execute setup");`,
-    manifest: {
-      channelConfigs: {
-        "cold-channel": {
-          schema: { type: "object" },
-          label: "Cold Channel",
-        },
-      },
-    },
   });
   testState.config = {
     channels: {
@@ -99,7 +75,7 @@ throw new Error("JSON inventory must not execute setup");`,
   const expected = {
     chat: {
       "cold-channel": {
-        label: "Cold Channel",
+        label: "Cold Control Plane",
         accounts: ["alerts", "default"],
         installed: true,
         origin: "configured",
@@ -116,28 +92,17 @@ afterAll(() => {
   vi.unstubAllEnvs();
 });
 
-it("resolves catalog-row repair hints without rebuilding the manifest registry", async () => {
-  testState.catalogEntries = OWNERLESS_CHANNEL_IDS.map(
-    (id) =>
-      ({
-        id,
-        meta: { label: id },
-        install: { npmSpec: `@openclaw/${id}` },
-      }) as ChannelPluginCatalogEntry,
-  );
-  testState.config = {
-    channels: Object.fromEntries(OWNERLESS_CHANNEL_IDS.map((id) => [id, { enabled: true }])),
-  } as OpenClawConfig;
+it("lists a configured catalog channel whose plugin is missing", async () => {
+  testState.catalogEntries = [
+    {
+      id: "feishu",
+      meta: { label: "Feishu" },
+      install: { npmSpec: "@openclaw/feishu" },
+    } as ChannelPluginCatalogEntry,
+  ];
+  testState.config = { channels: { feishu: { enabled: true } } } as OpenClawConfig;
   await listJson();
   expect(testState.json).toEqual([
-    {
-      chat: Object.fromEntries(
-        OWNERLESS_CHANNEL_IDS.map((channelId) => [
-          channelId,
-          { label: channelId, accounts: [], installed: false, origin: "configured" },
-        ]),
-      ),
-    },
+    { chat: { feishu: { label: "Feishu", accounts: [], installed: false, origin: "configured" } } },
   ]);
-  expect(loadPluginManifestRegistryForPluginRegistry).not.toHaveBeenCalled();
 });

@@ -99,18 +99,6 @@ describe("dns-cli probe bounds", () => {
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
-  it("bounds only the brew prefix probe with a SIGKILL-backed timeout", async () => {
-    await runDnsSetupApply();
-
-    const probeCall = spawnSyncMock.mock.calls.find(isBrewPrefixProbe);
-    expect(probeCall?.[2]).toMatchObject({ timeout: 15_000, killSignal: "SIGKILL" });
-    const nonProbeCalls = spawnSyncMock.mock.calls.filter((call) => !isBrewPrefixProbe(call));
-    expect(nonProbeCalls.length).toBeGreaterThan(0);
-    for (const call of nonProbeCalls) {
-      expect(call[2]?.timeout).toBeUndefined();
-    }
-  });
-
   it("does not restart CoreDNS when asynchronous zone publication fails", async () => {
     const failure = new Error("zone publication failed");
     vi.mocked(replaceWideAreaZoneFile).mockRejectedValueOnce(failure);
@@ -133,7 +121,13 @@ describe("dns-cli probe bounds", () => {
       fs.writeFileSync(corefilePath, original);
 
       await runDnsSetupApply();
-
+      const probeCall = spawnSyncMock.mock.calls.find(isBrewPrefixProbe);
+      expect(probeCall?.[2]).toMatchObject({ timeout: 15_000, killSignal: "SIGKILL" });
+      const nonProbeCalls = spawnSyncMock.mock.calls.filter((call) => !isBrewPrefixProbe(call));
+      expect(nonProbeCalls.length).toBeGreaterThan(0);
+      for (const call of nonProbeCalls) {
+        expect(call[2]?.timeout).toBeUndefined();
+      }
       expect(fs.readFileSync(corefilePath, "utf-8")).toBe(
         hasImport ? original : `.:53 {\n  errors\n}\n\nimport ${importGlob}\n`,
       );

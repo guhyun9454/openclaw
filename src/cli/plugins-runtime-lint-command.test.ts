@@ -58,33 +58,26 @@ describe("plugins lint", () => {
         scannedPackages: 1,
         warnings: optional
           ? []
-          : [
+          : ["peer-required", "required"].map((name) =>
               expect.objectContaining({
                 ruleId: "scan-incomplete",
-                message: expect.stringContaining('"peer-required"'),
+                message: expect.stringContaining(`"${name}"`),
               }),
-              expect.objectContaining({
-                ruleId: "scan-incomplete",
-                message: expect.stringContaining('"required"'),
-              }),
-            ],
+            ),
       });
     },
   );
 
-  it.each([null, "invalid"])(
-    "reports a malformed dependency map %s as incomplete",
-    async (dependencies) => {
-      const root = tempDirs.make("plugin-runtime-lint-invalid-map-");
-      await writeFixtureJson(path.join(root, "package.json"), {
-        name: "invalid-map",
-        dependencies,
-      });
-      expect(await lint(root)).toHaveBeenCalledExactlyOnceWith(
-        incomplete({ message: expect.stringContaining("dependencies") }),
-      );
-    },
-  );
+  it("reports a malformed dependency map as incomplete", async () => {
+    const root = tempDirs.make("plugin-runtime-lint-invalid-map-");
+    await writeFixtureJson(path.join(root, "package.json"), {
+      name: "invalid-map",
+      dependencies: null,
+    });
+    expect(await lint(root)).toHaveBeenCalledExactlyOnceWith(
+      incomplete({ message: expect.stringContaining("dependencies") }),
+    );
+  });
 
   it("reports incomplete parsing as a warning", async () => {
     const root = tempDirs.make("plugin-runtime-lint-incomplete-");

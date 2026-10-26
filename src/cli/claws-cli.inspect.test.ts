@@ -1,9 +1,10 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { emptyPluginCapabilityEvidence } from "../claws/packages.test-support.js";
+import { emptyPluginPlanEvidence } from "../claws/packages.test-support.js";
 import { defaultRuntime } from "../runtime.js";
+import { writeFixtureJson } from "./cli-fixtures.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   preflightClawPackage: vi.fn(),
@@ -33,29 +34,18 @@ const preflight = {
   mapped: ["commands", "skills"],
   unavailable: ["agents"],
   adapterIdentity: "openclaw/test",
-  declaredCapabilities: emptyPluginCapabilityEvidence.declared,
-  capabilityGrants: emptyPluginCapabilityEvidence.grants,
-  capabilityGrantsByPluginId: emptyPluginCapabilityEvidence.grantsByPluginId,
+  ...emptyPluginPlanEvidence,
 };
-
-async function writeJson(root: string, name: string, value: unknown) {
-  await writeFile(join(root, name), JSON.stringify(value), "utf8");
-}
 
 it("rejects a plugin declared by both the portable manifest and OpenClaw profile", async () => {
   const root = tempDirs.make("openclaw-claws-inspect-extension-");
   await mkdir(join(root, "profiles"));
-  await writeJson(root, "package.json", {
-    name: "@acme/demo-agent",
-    version: "1.2.3",
-    openclaw: { claw: "openclaw.claw.json" },
-  });
-  await writeJson(root, "openclaw.claw.json", {
+  await writeFixtureJson(join(root, "openclaw.claw.json"), {
     schemaVersion: 1,
     agent: { id: "demo-agent" },
     packages: [{ kind: "plugin", source: "clawhub", ref: "@owner/audit", version: "2.0.1" }],
   });
-  await writeJson(root, "profiles/openclaw.yml", {
+  await writeFixtureJson(join(root, "profiles/openclaw.yml"), {
     schemaVersion: 1,
     agent: {},
     extensions: [
@@ -73,7 +63,7 @@ it("rejects a plugin declared by both the portable manifest and OpenClaw profile
   vi.spyOn(defaultRuntime, "writeJson").mockImplementation((value) => values.push(value));
   const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {});
   mocks.preflightClawPackage.mockResolvedValue(preflight);
-  await runClawsInspectCommand(root, { json: true });
+  await runClawsInspectCommand(join(root, "openclaw.claw.json"), { json: true });
   expect(values[0]).toMatchObject({
     valid: false,
     extensions: [
@@ -96,7 +86,7 @@ it.each(["agent", "diagnostic"] as const)(
     const root = tempDirs.make("claws-redaction-");
     const marker = "CLAW_MARKER";
     const injected = `Agent\u001b]0;INJECTED_TITLE\u0007${marker}`;
-    await writeJson(root, "openclaw.claw.json", {
+    await writeFixtureJson(join(root, "openclaw.claw.json"), {
       schemaVersion: 1,
       agent: { id: "demo-agent", ...(kind === "agent" ? { name: injected } : {}) },
       ...(kind === "diagnostic" ? { metadata: { [injected]: 1 } } : {}),
