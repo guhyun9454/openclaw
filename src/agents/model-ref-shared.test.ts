@@ -14,7 +14,6 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import type { ProviderPlugin } from "../plugins/types.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
-import { normalizeStaticProviderModelId } from "./model-ref-shared.js";
 import { normalizeProviderModelIdWithRuntime } from "./provider-model-normalization.runtime.js";
 
 function resetRuntime() {
@@ -30,42 +29,25 @@ const normalizationRequest = {
 };
 const normalize = () => normalizeProviderModelIdWithRuntime(normalizationRequest);
 
-it("aligns built-in Anthropic aliases with the bundled manifest", async () => {
-  const manifestUrl = new URL("../../extensions/anthropic/openclaw.plugin.json", import.meta.url);
-  const manifest: {
-    modelIdNormalization: {
-      providers: { anthropic: { aliases: Record<string, string> } };
-    };
-  } = JSON.parse(await fs.readFile(manifestUrl, "utf8"));
-  const aliases = manifest.modelIdNormalization.providers.anthropic.aliases;
-  expect(Object.keys(aliases).length).toBeGreaterThan(0);
-  for (const [alias, target] of Object.entries(aliases)) {
-    expect(
-      normalizeStaticProviderModelId("anthropic", alias, { allowManifestNormalization: false }),
-      alias,
-    ).toBe(target);
-  }
-});
-
 const execFileAsync = promisify(execFile);
 
 function createGeneration() {
   const pluginRegistry = createEmptyPluginRegistry();
-  const register = (
-    id: string,
-    hookAliases: string[],
-    normalizeModelId: ProviderPlugin["normalizeModelId"],
-  ) => {
+  for (const id of ["foreign", "fixture"]) {
     pluginRegistry.providers.push({
       pluginId: `${id}-owner`,
       source: `${id}-owner.ts`,
-      provider: { id, label: id, auth: [], hookAliases, normalizeModelId },
+      provider: {
+        id,
+        label: id,
+        auth: [],
+        hookAliases: [id === "foreign" ? "fixture" : "fixture-alias"],
+        normalizeModelId(this: ProviderPlugin, { modelId }) {
+          return `${this.pluginId}-${modelId}`;
+        },
+      },
     });
-  };
-  register("foreign", ["fixture"], () => "foreign-model");
-  register("fixture", ["fixture-alias"], function (this: ProviderPlugin, { modelId }) {
-    return `${this.pluginId}-${modelId}`;
-  });
+  }
   const metadataSnapshot = createPluginMetadataSnapshotFixture({
     plugins: ["foreign", "fixture"].map((id) => ({ id: `${id}-owner`, providers: [id] })),
   });

@@ -66,11 +66,19 @@ it.each([
   );
 });
 
-it.each([true, "required"] as const)("uses default utility mode %s", (useUtilityModel) => {
-  const cfg = withAgents(utilityDefaults);
-  expectRoute(cfg, "openai", "gpt-5.4-mini", { useUtilityModel });
-  expectRoute(cfg, "anthropic", "claude-opus-4-6");
-});
+it.each([
+  [true, utilityDefaults.utilityModel, "openai", "gpt-5.4-mini"],
+  ["required", utilityDefaults.utilityModel, "openai", "gpt-5.4-mini"],
+  [false, utilityDefaults.utilityModel, "anthropic", "claude-opus-4-6"],
+  [true, "", "anthropic", "claude-opus-4-6"],
+] as const)(
+  "selects utility mode %s with model %s",
+  (useUtilityModel, utilityModel, provider, id) => {
+    expectRoute(withAgents({ ...utilityDefaults, utilityModel }), provider, id, {
+      useUtilityModel,
+    });
+  },
+);
 
 it.each([
   [undefined, "google", "gemini-3.1-flash-lite"],
@@ -80,15 +88,6 @@ it.each([
     ops: { utilityModel: "google/gemini-3.1-flash-lite-preview" },
   });
   expectRoute(cfg, provider, modelId, { agentId: "ops", modelRef, useUtilityModel: true });
-});
-
-it("treats an empty utility model as disabled", () => {
-  expectRoute(
-    withAgents({ ...utilityDefaults, utilityModel: "" }),
-    "anthropic",
-    "claude-opus-4-6",
-    { useUtilityModel: true },
-  );
 });
 
 it.each([
