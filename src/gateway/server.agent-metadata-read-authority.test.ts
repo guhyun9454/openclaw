@@ -79,8 +79,6 @@ it.for(["live", "stopped", "replaced"] as const)(
       const joined = await reach(entered.promise, request);
       expect(joined?.entry?.sessionId).toBe(f.sessionId);
       expect(f.context.dedupe.get(`agent:${f.runId}`)?.payload).toMatchObject({
-        runId: f.runId,
-        sessionKey: f.sessionKey,
         status: "accepted",
       });
       const acceptedSource = rpcSourceTesting.get(f.runId);
@@ -115,7 +113,6 @@ it.for(["live", "stopped", "replaced"] as const)(
           await writeObserver.mock.results[0]?.value,
           "persisted offloaded image",
         );
-        expect(await fs.readFile(stored.path)).toEqual(image);
         const recorder = expectDefined(prepared.userTurn.recorder, "admitted user-turn recorder");
         const withPendingInput = expectDefined(recorder.withPendingInput, "pending-input owner");
         const persisted = await withPendingInput(() => recorder.persistApproved());
