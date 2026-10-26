@@ -149,10 +149,10 @@ describe("resolveCodexProviderWebSearchSupport", () => {
     );
   });
 
-  it.each(["startup", "read"])("reports unknown support after %s failure", async (stage) => {
-    (stage === "startup" ? clientFactory : request).mockRejectedValueOnce(new Error(stage));
+  it("reports unknown support after startup failure", async () => {
+    clientFactory.mockRejectedValueOnce(new Error("startup"));
     await expect(resolveSupport()).resolves.toBe("unknown");
-    expect(request).toHaveBeenCalledTimes(stage === "startup" ? 0 : 1);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it.each([

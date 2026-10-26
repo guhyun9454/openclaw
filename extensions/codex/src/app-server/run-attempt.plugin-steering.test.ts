@@ -72,7 +72,6 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
       },
       { persistedThreads: [] },
     );
-    const steers = () => dispatchedSteers;
     const { run, started } = startClockControlledAttempt(params);
     await started;
     const handle = registrations.mock.calls.findLast((call) => call[0] === params.sessionId)?.[1];
@@ -126,7 +125,7 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
             : { steered: true, runId: params.runId },
         );
         if (scenario === "disposed") {
-          expect(steers()).toHaveLength(0);
+          expect(dispatchedSteers).toHaveLength(0);
           expect
             .soft(await readTranscriptMessagesByIdentity(params))
             .not.toContainEqual(expect.objectContaining({ idempotencyKey }));
@@ -145,7 +144,7 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
         }
       }
       if (scenario !== "disabled") {
-        expect(steers()).toMatchObject([
+        expect(dispatchedSteers).toMatchObject([
           { expectedTurnId: "turn-1", input: [{ type: "text", text }] },
         ]);
         expect(
@@ -154,7 +153,7 @@ it.each(["allowed", "disposed", "disabled", "accepted-disposed"] as const)(
           ),
         ).toEqual([expect.objectContaining({ content: text, display: false })]);
       } else {
-        expect(steers()).toHaveLength(0);
+        expect(dispatchedSteers).toHaveLength(0);
       }
       expect(handle.isAborted?.()).toBe(false);
     } finally {

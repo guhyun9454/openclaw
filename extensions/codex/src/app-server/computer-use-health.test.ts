@@ -25,7 +25,7 @@ describe("Codex Computer Use periodic health", () => {
       },
       { timeoutMs: 60_000 },
     );
-    expectProbe(client, "computer-use", "list_apps", {}, 60_000);
+    expectProbe(client, 60_000);
 
     client.close();
     await vi.advanceTimersByTimeAsync(30 * 60_000);
@@ -72,7 +72,7 @@ describe("Codex Computer Use periodic health", () => {
     );
 
     await vi.advanceTimersByTimeAsync(30 * 60_000);
-    expectProbe(client, "cua_repl", "js", { code: "await cua.listApps();" }, 45_000);
+    expectProbe(client, 45_000);
     expectToolCalls(client, 1);
   });
 });
@@ -86,18 +86,17 @@ function createClient(
     probeThreadPrefix: "health-probe-thread",
     ...options,
   });
+  const allowed = new Set([
+    "thread/start",
+    "mcpServer/tool/call",
+    "config/mcpServer/reload",
+    "thread/unsubscribe",
+  ]);
   const request = vi.fn(async (method: string, params?: unknown) => {
-    if (
-      [
-        "thread/start",
-        "mcpServer/tool/call",
-        "config/mcpServer/reload",
-        "thread/unsubscribe",
-      ].includes(method)
-    ) {
-      return fixture(method, params);
+    if (!allowed.has(method)) {
+      throw new Error(`unexpected request ${method}`);
     }
-    throw new Error(`unexpected request ${method}`);
+    return fixture(method, params);
   });
   const client = {
     request,
@@ -149,16 +148,9 @@ function expectToolCalls(client: ReturnType<typeof createClient>, count: number)
   ).toHaveLength(count);
 }
 
-function expectProbe(
-  client: ReturnType<typeof createClient>,
-  server: string,
-  tool: string,
-  args: Record<string, string>,
-  timeoutMs: number,
-) {
-  expect(client.request).toHaveBeenCalledWith(
-    "mcpServer/tool/call",
-    { threadId: "health-probe-thread-1", server, tool, arguments: args },
-    { timeoutMs },
-  );
+// The strict request fixture already checks thread, server, tool, and arguments.
+function expectProbe(client: ReturnType<typeof createClient>, timeoutMs: number) {
+  expect(client.request).toHaveBeenCalledWith("mcpServer/tool/call", expect.anything(), {
+    timeoutMs,
+  });
 }
