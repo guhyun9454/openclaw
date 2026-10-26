@@ -65,15 +65,34 @@ it("admits real producer plugin host, dependency and basename links without trav
         (await fs.lstat(path.join(await fs.realpath(alias), "node_modules"))).isSymbolicLink(),
       ).toBe(true);
       const host = rehearsal.pluginCodeLinks!.find((fact) => fact.target?.path === candidate)!;
+      expect(host).toBeDefined();
       const admitted = await inspectPreparedDoctorRehearsal(params);
       admitted.assertPrepared();
 
-      const protectedEnv = `HOME USERPROFILE OPENCLAW_HOME OPENCLAW_STATE_DIR TMPDIR TMP TEMP
-        OPENCLAW_CONFIG_PATH OPENCLAW_WORKSPACE_DIR XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME
-        OPENCLAW_SKIP_CHANNELS OPENCLAW_SKIP_PROVIDERS OPENCLAW_SKIP_CRON OPENCLAW_SKIP_GMAIL_WATCHER
-        OPENCLAW_SKIP_CANVAS_HOST OPENCLAW_SKIP_BROWSER_CONTROL_SERVER OPENCLAW_SKIP_STARTUP_MODEL_PREWARM
-        OPENCLAW_NO_AUTO_UPDATE NODE_DISABLE_COMPILE_CACHE`;
-      for (const key of protectedEnv.split(/\s+/)) {
+      for (const key of [
+        "HOME",
+        "USERPROFILE",
+        "OPENCLAW_HOME",
+        "OPENCLAW_STATE_DIR",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "OPENCLAW_CONFIG_PATH",
+        "OPENCLAW_WORKSPACE_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "OPENCLAW_SKIP_CHANNELS",
+        "OPENCLAW_SKIP_PROVIDERS",
+        "OPENCLAW_SKIP_CRON",
+        "OPENCLAW_SKIP_GMAIL_WATCHER",
+        "OPENCLAW_SKIP_CANVAS_HOST",
+        "OPENCLAW_SKIP_BROWSER_CONTROL_SERVER",
+        "OPENCLAW_SKIP_STARTUP_MODEL_PREWARM",
+        "OPENCLAW_NO_AUTO_UPDATE",
+        "NODE_DISABLE_COMPILE_CACHE",
+      ]) {
         const original = params.env[key];
         params.env[key] = "changed";
         try {
@@ -119,6 +138,10 @@ it("admits real producer plugin host, dependency and basename links without trav
         expect(await fs.readFile(sentinel, "utf8")).toBe("external state must not be admitted");
       }
       await fs.writeFile(rehearsal.configPath, raw);
+      const unowned = path.join(rehearsal.stateDir, "undeclared-data");
+      await fs.symlink(path.join(rehearsal.stateDir, "workspace"), unowned, "dir");
+      expect(() => admitted.assertPrepared()).toThrow(/unsafe ownership or links/);
+      await fs.unlink(unowned);
 
       // Retargeting to another private directory is not permission to replace
       // the producer's exact code edge. Restore its inode, not a lookalike link.
@@ -141,6 +164,7 @@ it("admits real producer plugin host, dependency and basename links without trav
         await fs.rename(heldCandidate, candidate);
       }
       admitted.assertPrepared();
+      expect(admitted.fact.kind).toBe("doctor-schema-rehearsal");
       expect(await fs.readFile(path.join(candidate, "retained.txt"), "utf8")).toBe(
         "candidate is not migration data",
       );
