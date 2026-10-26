@@ -10,6 +10,7 @@ import { loadavg } from "node:os";
 import path from "node:path";
 import { PerformanceObserver } from "node:perf_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import type { PluginRegistry } from "../../src/plugins/registry-types.js";
 
 const [mode = "timing", rawIterations = "5"] = process.argv.slice(2);
 const iterations = Number(rawIterations);
@@ -74,7 +75,7 @@ try {
     const cpu = process.threadCpuUsage();
     const totalCpu = process.cpuUsage();
     const started = performance.now();
-    const registry = await withPluginSourceCaptureStorage(
+    const registry: PluginRegistry = await withPluginSourceCaptureStorage(
       { stateDir: process.env.OPENCLAW_STATE_DIR, placement: "state" },
       () =>
         withPluginCache(cache, () =>
