@@ -52,12 +52,12 @@ vi.mock("../plugins/provider-hook-runtime.js", async (importOriginal) => {
   };
 });
 
-function lifecycleModel(api = "test-lifecycle-provider") {
+function lifecycleModel() {
   const registry = createApiRegistry();
   const model = bindModelLlmRuntime(
     makeProviderModelFixture({
-      api,
-      provider: api === "ollama" ? api : "test-provider",
+      api: "test-lifecycle-provider",
+      provider: "ollama",
       id: "test-model",
       baseUrl: "http://127.0.0.1:19432/v1",
     }),
@@ -90,26 +90,15 @@ describe("provider stream lifecycle registration", () => {
     await stopManagedProviderLocalServices();
   });
 
-  it("registers provider streams with the resolved runtime lifecycle handle", async () => {
-    providerStream.mockReturnValue(createAssistantMessageEventStream());
-    const { model, apiRegistry } = lifecycleModel();
-    const auth = { mode: "oauth", authFlow: "test-subscription" };
-    const streamFn = registerProviderStreamForModel({ model, wrapProviderStream: true, auth });
-    expect(apiRegistry.getApiProvider(model.api)).toBeDefined();
-    await streamFn?.(model, {} as never, {});
-    expect(getModelProviderLocalServiceReconciler(providerStream.mock.calls[0]![0])).toBe(
-      reconcile,
-    );
-    expect(prepare).toHaveBeenCalledExactlyOnceWith(auth);
-    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(
-      providerStream.mock.invocationCallOrder[0]!,
-    );
-  });
-
   it.each([undefined, new Error("preset reload failed")])(
     "reconciles before direct-compaction provider requests (error=%s)",
     async (reconcileError) => {
       const events: string[] = [];
+      const auth = { mode: "oauth", authFlow: "test-subscription" };
+      prepare.mockImplementation(async (actualAuth) => {
+        expect(actualAuth).toEqual(auth);
+        events.push("prepare");
+      });
       reconcile.mockImplementation(async () => {
         events.push("reload");
         if (reconcileError) {
@@ -121,6 +110,7 @@ describe("provider stream lifecycle registration", () => {
         return guardedResponse();
       });
       providerStream.mockImplementation(async (requestModel) => {
+        expect(getModelProviderLocalServiceReconciler(requestModel)).toBe(reconcile);
         const response = await buildGuardedModelFetch(requestModel)(
           "http://127.0.0.1:19432/v1/responses",
           { method: "POST", body: "{}" },
@@ -128,18 +118,20 @@ describe("provider stream lifecycle registration", () => {
         await response.text();
         return createAssistantMessageEventStream();
       });
-      const { model: localModel, apiRegistry } = lifecycleModel("ollama");
+      const { model: localModel, apiRegistry } = lifecycleModel();
       const model = attachModelProviderLocalService(localModel, {
         command: process.execPath,
         args: ["-e", "setInterval(() => {}, 1000)"],
         healthUrl: "http://127.0.0.1:19432/health",
       });
-      expect(apiRegistry.getApiProvider("ollama")).toBeUndefined();
+      expect(apiRegistry.getApiProvider(model.api)).toBeUndefined();
       const streamFn = registerProviderStreamForModel({
         model,
         agentDir: "/tmp/test-agent",
         workspaceDir: "/tmp/test-workspace",
         apiRegistry,
+        wrapProviderStream: true,
+        auth,
       });
 
       expect(vi.mocked(resolveProviderStreamFn).mock.calls[0]?.[0].context).toMatchObject({
@@ -147,16 +139,18 @@ describe("provider stream lifecycle registration", () => {
         workspaceDir: "/tmp/test-workspace",
         provider: "ollama",
         modelId: "test-model",
-        model: { api: "ollama", provider: "ollama", id: "test-model" },
+        model: { api: "test-lifecycle-provider", provider: "ollama", id: "test-model" },
       });
-      expect(apiRegistry.getApiProvider("ollama")).toBeDefined();
+      expect(apiRegistry.getApiProvider(model.api)).toBeDefined();
 
       if (reconcileError) {
         await expect(streamFn?.(model, {} as never, {})).rejects.toThrow(reconcileError.message);
       } else {
         await streamFn?.(model, {} as never, {});
       }
-      expect(events).toEqual(reconcileError ? ["reload"] : ["reload", "provider-request"]);
+      expect(events).toEqual(
+        reconcileError ? ["prepare", "reload"] : ["prepare", "reload", "provider-request"],
+      );
     },
   );
 });

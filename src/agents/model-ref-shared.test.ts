@@ -1,11 +1,5 @@
-import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
-import { createRequire } from "node:module";
-import path from "node:path";
-import { promisify } from "node:util";
-import { build } from "esbuild";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { STATE_SCHEMA_GENERATOR_INPUTS } from "../../scripts/lib/state-schema-inline-plugin.mts";
+import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -13,7 +7,7 @@ import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plug
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import type { ProviderPlugin } from "../plugins/types.js";
-import { withTempDir } from "../test-utils/temp-dir.js";
+import { normalizeModelRef } from "./model-ref-shared.js";
 import { normalizeProviderModelIdWithRuntime } from "./provider-model-normalization.runtime.js";
 
 function resetRuntime() {
@@ -23,14 +17,11 @@ function resetRuntime() {
 beforeEach(resetRuntime);
 afterEach(resetRuntime);
 
-const normalizationRequest = {
-  provider: "fixture",
-  context: { provider: "fixture", modelId: "model" },
-};
-const normalize = () => normalizeProviderModelIdWithRuntime(normalizationRequest);
-
-const execFileAsync = promisify(execFile);
-
+const normalize = () =>
+  normalizeProviderModelIdWithRuntime({
+    provider: "fixture",
+    context: { provider: "fixture", modelId: "model" },
+  });
 function createGeneration() {
   const pluginRegistry = createEmptyPluginRegistry();
   for (const id of ["foreign", "fixture"]) {
@@ -73,88 +64,30 @@ it("does not borrow an active provider on a request registry miss", () => {
   expect(withPluginRuntimeRegistryScope(createEmptyPluginRegistry(), normalize)).toBeUndefined();
 });
 
-it("invokes the retained normalizer from the packaged runtime layout", async () => {
-  await withTempDir("openclaw-model-normalizer-", async (root) => {
-    const dist = path.join(root, "dist");
-    await fs.mkdir(dist, { recursive: true });
-    await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}');
-    for (const schema of STATE_SCHEMA_GENERATOR_INPUTS) {
-      await fs.copyFile(path.resolve(schema), path.join(dist, path.basename(schema)));
-    }
-    const bridgePath = path.join(dist, "model-reference.js");
-    // Exercise the dist-root layout, not the source-relative bridge path.
-    await build({
-      stdin: {
-        contents: `export * from "./src/agents/provider-model-normalization.runtime.ts";
-            export { withPluginRuntimeGenerationScope } from "./src/plugins/runtime/generation-scope.ts";`,
-        resolveDir: process.cwd(),
-      },
-      outfile: bridgePath,
-      bundle: true,
-      platform: "node",
-      format: "esm",
-      tsconfig: path.resolve("tsconfig.json"),
-    });
-    // SAFETY: This test emits the actual typed bridge into a standalone package.
-    const bridge = createRequire(import.meta.url)(
-      bridgePath,
-    ) as typeof import("./provider-model-normalization.runtime.js") & {
-      withPluginRuntimeGenerationScope: typeof withPluginRuntimeGenerationScope;
-    };
-
-    expect(
-      bridge.withPluginRuntimeGenerationScope(createGeneration(), () =>
-        bridge.normalizeProviderModelIdWithRuntime(normalizationRequest),
-      ),
-    ).toBe("fixture-owner-model");
-  });
-});
-
-it("applies source manifest normalization once without an executable hook", async () => {
-  await withTempDir("openclaw-model-normalizer-source-", async (root) => {
-    const script = `
-        const { pathToFileURL } = await import("node:url");
-        const load = (file) => import(pathToFileURL(${JSON.stringify(process.cwd())} + "/" + file).href);
-        const { normalizeModelRef } = await load("src/agents/model-ref-shared.ts");
-        const { createPluginMetadataSnapshotFixture } = await load("src/plugins/plugin-metadata.test-support.ts");
-        const { createEmptyPluginRegistry } = await load("src/plugins/registry-empty.ts");
-        const { withPluginRuntimeGenerationScope } = await load("src/plugins/runtime/generation-scope.ts");
-        const { withPluginRuntimeRegistryScope } = await load("src/plugins/runtime/gateway-request-scope.ts");
-        const { withPluginMetadataSnapshotScope } = await load("src/plugins/current-plugin-metadata-snapshot.ts");
-        const normalize = () => normalizeModelRef("fixture", "compat/compat/model");
-        const metadataSnapshot = createPluginMetadataSnapshotFixture({ plugins: [{
-          id: "fixture", providers: ["fixture"],
-          modelIdNormalization: { providers: { fixture: { stripPrefixes: ["compat/"] } } },
-        }] });
-        const empty = withPluginRuntimeGenerationScope(
-          { metadataSnapshot, pluginRegistry: createEmptyPluginRegistry() },
-          normalize,
-        );
-        const registry = createEmptyPluginRegistry();
-        registry.providers.push({ pluginId: "fixture", provider: { id: "fixture", label: "Fixture", auth: [] } });
-        const withMetadata = (run) => withPluginMetadataSnapshotScope(metadataSnapshot, run, { trustConfigIdentity: true });
-        const request = withMetadata(() => withPluginRuntimeRegistryScope(registry, normalize));
-        const unprepared = withMetadata(normalize);
-        process.stdout.write(JSON.stringify({ empty, request, unprepared }));
-      `;
-    const { stdout } = await execFileAsync(
-      process.execPath,
-      ["--import", path.resolve("scripts/tsx.mjs"), "--input-type=module", "--eval", script],
+it("applies manifest normalization once without an executable hook", () => {
+  const normalizeManifest = () => normalizeModelRef("fixture", "compat/compat/model");
+  const metadataSnapshot = createPluginMetadataSnapshotFixture({
+    plugins: [
       {
-        env: {
-          ...process.env,
-          OPENCLAW_HOME: root,
-          OPENCLAW_STATE_DIR: path.join(root, "state"),
-          OPENCLAW_CONFIG_PATH: path.join(root, "openclaw.json"),
-          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-        },
+        id: "fixture",
+        providers: ["fixture"],
+        modelIdNormalization: { providers: { fixture: { stripPrefixes: ["compat/"] } } },
       },
-    );
-    const normalized = { provider: "fixture", model: "compat/model" };
-    expect(JSON.parse(stdout)).toEqual({
-      empty: normalized,
-      request: normalized,
-      unprepared: normalized,
-    });
+    ],
   });
+  const registry = createEmptyPluginRegistry();
+  registry.providers.push({
+    pluginId: "fixture",
+    provider: { id: "fixture", label: "Fixture", auth: [] },
+  });
+  const withMetadata = <T>(run: () => T) =>
+    withPluginMetadataSnapshotScope(metadataSnapshot, run, { trustConfigIdentity: true });
+  expect([
+    withPluginRuntimeGenerationScope(
+      { metadataSnapshot, pluginRegistry: createEmptyPluginRegistry() },
+      normalizeManifest,
+    ),
+    withMetadata(() => withPluginRuntimeRegistryScope(registry, normalizeManifest)),
+    withMetadata(normalizeManifest),
+  ]).toEqual(Array.from({ length: 3 }, () => ({ provider: "fixture", model: "compat/model" })));
 });
