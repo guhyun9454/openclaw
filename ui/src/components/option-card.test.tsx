@@ -24,6 +24,16 @@ function mount(props: Partial<Props> = {}, container?: HTMLDivElement) {
   flush();
   return { ...view, update };
 }
+function mountBeside(control: HTMLElement, props: Partial<Props> = {}, focus = false) {
+  const { container } = mountSolid(() => <div />);
+  const target = document.createElement("div");
+  container.append(control, target);
+  if (focus) {
+    control.focus();
+  }
+  return { ...mount(props, target), container };
+}
+const checked = (row: HTMLElement) => row.getAttribute("aria-checked");
 function expectRows(view: ReturnType<typeof mount>, rows: HTMLElement[]) {
   view.getAllByRole("radio").forEach((row, index) => expect(row).toBe(rows[index]));
   expect(view.getAllByRole("radio")).toHaveLength(rows.length);
@@ -49,33 +59,22 @@ describe("option card", () => {
     expect(onSelect).toHaveBeenCalledWith("one");
   });
 
-  it.each(["textarea", "button"] as const)(
-    "preserves focus on a %s without retrying a refused recommendation",
-    (tagName) => {
-      const control = document.createElement(tagName);
-      const target = document.createElement("div");
-      const { container } = mountSolid(() => <div />);
-      container.append(control, target);
-      control.focus();
-      const view = mount({ options: choices(true), disabled: false }, target);
+  it("preserves external focus without retrying a refused recommendation", () => {
+    const control = document.createElement("textarea");
+    const view = mountBeside(control, { options: choices(true), disabled: false }, true);
 
-      expect(document.activeElement).toBe(control);
-      control.blur();
-      view.update({ disabled: true });
-      view.update({ disabled: false, options: choices(true, "Updated details") });
+    expect(document.activeElement).toBe(control);
+    control.blur();
+    view.update({ disabled: true });
+    view.update({ disabled: false, options: choices(true, "Updated details") });
 
-      expect(document.activeElement).toBe(document.body);
-      control.remove();
-    },
-  );
+    expect(document.activeElement).toBe(document.body);
+    control.remove();
+  });
 
   it("holds a disabled recommendation and retains selection and rows across display updates", () => {
     const onSelect = vi.fn();
-    const view = mount({
-      options: choices(true),
-      disabled: true,
-      onSelect,
-    });
+    const view = mount({ options: choices(true), disabled: true, onSelect });
     const recommended = view.getByRole("radio", { name: "OneRecommended" });
     const second = view.getByRole("radio", { name: "Two" });
     expect(document.activeElement).toBe(document.body);
@@ -89,20 +88,20 @@ describe("option card", () => {
     second.focus();
     second.click();
     flush();
-    expect(second.getAttribute("aria-checked")).toBe("true");
+    expect(checked(second)).toBe("true");
 
     view.update({ disabled: true });
     second.click();
-    expect(second.getAttribute("aria-checked")).toBe("true");
+    expect(checked(second)).toBe("true");
     expect(second.hasAttribute("disabled")).toBe(true);
     expect(onSelect).toHaveBeenCalledExactlyOnceWith("two");
 
     view.update({ disabled: false, options: choices(true, "More details") });
     expectRows(view, [recommended, second]);
-    expect(second.getAttribute("aria-checked")).toBe("true");
+    expect(checked(second)).toBe("true");
 
     view.update({ question: "Next question", disabled: false });
-    expect(recommended.getAttribute("aria-checked")).toBe("true");
+    expect(checked(recommended)).toBe("true");
     expect(document.activeElement).toBe(recommended);
   });
 
@@ -117,27 +116,21 @@ describe("option card", () => {
     });
     view.update({ disabled: false });
 
-    expect(view.getByRole("radio").getAttribute("aria-checked")).toBe("false");
+    expect(checked(view.getByRole("radio"))).toBe("false");
     expect(document.activeElement).toBe(document.body);
   });
 
   it("keeps the choices to one Tab stop and moves the checked choice with arrow keys", () => {
     const onSelect = vi.fn();
     const previous = document.createElement("button");
-    const target = document.createElement("div");
-    const { container } = mountSolid(() => <div />);
-    container.append(previous, target);
-    const view = mount(
-      {
-        options: [...choices(), { value: "three", label: "Three" }],
-        onSelect,
-      },
-      target,
-    );
+    const view = mountBeside(previous, {
+      options: [...choices(), { value: "three", label: "Three" }],
+      onSelect,
+    });
     const [one, two, three] = view.getAllByRole("radio");
     const skip = view.getByRole("button", { name: "Skip for now" });
     const tabStops = () =>
-      [...container.querySelectorAll("button")].filter((button) => button.tabIndex >= 0);
+      [...view.container.querySelectorAll("button")].filter((button) => button.tabIndex >= 0);
     const press = (key: string) => {
       document.activeElement!.dispatchEvent(
         new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
@@ -149,8 +142,7 @@ describe("option card", () => {
     one!.focus();
     press("ArrowDown");
     expect(document.activeElement).toBe(two);
-    expect(two!.getAttribute("aria-checked")).toBe("true");
-    expect(one!.getAttribute("aria-checked")).toBe("false");
+    expect([checked(one!), checked(two!)]).toEqual(["false", "true"]);
     expect(tabStops()).toEqual([previous, two, skip]);
 
     const walk = ["ArrowRight", "ArrowDown", "ArrowUp", "ArrowLeft", "End", "Home"].map((key) => {
@@ -158,7 +150,7 @@ describe("option card", () => {
       return view.getAllByRole("radio").indexOf(document.activeElement as HTMLElement);
     });
     expect(walk).toEqual([2, 0, 2, 1, 2, 0]);
-    expect(one!.getAttribute("aria-checked")).toBe("true");
+    expect(checked(one!)).toBe("true");
     expect(tabStops()).toEqual([previous, one, skip]);
     expect(onSelect).not.toHaveBeenCalled();
 

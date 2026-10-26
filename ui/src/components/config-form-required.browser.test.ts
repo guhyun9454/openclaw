@@ -27,6 +27,21 @@ function control(container: HTMLElement, label: string) {
   return element;
 }
 
+function fieldsWithDefaults(defaults: boolean) {
+  return Object.fromEntries(
+    Object.entries(fieldTypes).map(([kind, schema]) => [
+      kind,
+      { ...schema, title: kind, ...(defaults ? { default: values[kind] } : {}) },
+    ]),
+  );
+}
+
+function expectRequired(field: Element, required: boolean) {
+  expect(field.getAttribute("aria-required")).toBe(required ? "true" : null);
+  expect(field.hasAttribute("required")).toBe(false);
+  expect(field.closest(".settings-row")?.textContent?.includes("Required")).toBe(required);
+}
+
 function render(properties: Record<string, JsonSchema>, required: string[], value: unknown) {
   const container = document.createElement("div");
   const onPatch = vi.fn();
@@ -64,16 +79,11 @@ describe("config field required semantics", () => {
     for (const kind of Object.keys(fieldTypes)) {
       const required = control(container, "required" + kind);
       const optional = control(container, "optional" + kind);
-      expect(required.getAttribute("aria-required"), kind).toBe("true");
-      expect(optional.getAttribute("aria-required"), kind).toBeNull();
-      expect(required.hasAttribute("required"), kind).toBe(false);
-      expect(required.closest(".settings-row")?.textContent).toContain("Required");
-      expect(optional.closest(".settings-row")?.textContent).not.toContain("Required");
+      expectRequired(required, true);
+      expectRequired(optional, false);
     }
     for (const label of ["Typed entry", "raw: JSON value"]) {
-      const unlabeled = control(container, label);
-      expect(unlabeled.getAttribute("aria-required")).toBe("true");
-      expect(unlabeled.closest(".settings-row")?.textContent).toContain("Required");
+      expectRequired(control(container, label), true);
     }
     const required = control(container, "requiredtext");
     required.value = "";
@@ -112,10 +122,7 @@ describe("config field required semantics", () => {
     ] as const) {
       const group = container.querySelector(`[role="radiogroup"][aria-label="${label}"]`);
       expect(group).not.toBeNull();
-      expect(group?.getAttribute("aria-required"), label).toBe(required ? "true" : null);
-      expect(group?.closest(".settings-row")?.textContent?.includes("Required"), label).toBe(
-        required,
-      );
+      expectRequired(group!, required);
       expect(group?.querySelector("[required]")).toBeNull();
     }
     expect(onPatch).not.toHaveBeenCalled();
@@ -131,22 +138,14 @@ describe("config field required semantics", () => {
   });
 
   it("does not request manual input for direct or inherited valid defaults", () => {
-    const properties = Object.fromEntries(
-      Object.entries(fieldTypes).map(([kind, schema]) => [
-        kind,
-        { ...schema, title: kind, default: values[kind] },
-      ]),
-    );
-    const direct = render(properties, Object.keys(fieldTypes), {});
+    const direct = render(fieldsWithDefaults(true), Object.keys(fieldTypes), {});
     const inherited = render(
       {
         inherited: {
           type: "object",
           default: values,
           required: Object.keys(fieldTypes),
-          properties: Object.fromEntries(
-            Object.entries(fieldTypes).map(([kind, schema]) => [kind, { ...schema, title: kind }]),
-          ),
+          properties: fieldsWithDefaults(false),
         },
       },
       [],
@@ -154,10 +153,7 @@ describe("config field required semantics", () => {
     );
     for (const { container, onPatch } of [direct, inherited]) {
       for (const kind of Object.keys(fieldTypes)) {
-        const field = control(container, kind);
-        expect(field.getAttribute("aria-required"), kind).toBeNull();
-        expect(field.hasAttribute("required"), kind).toBe(false);
-        expect(field.closest(".settings-row")?.textContent).not.toContain("Required");
+        expectRequired(control(container, kind), false);
       }
       expect(onPatch).not.toHaveBeenCalled();
     }
