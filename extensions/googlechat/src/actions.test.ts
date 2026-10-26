@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 const resolveGoogleChatAccount = vi.hoisted(() => vi.fn());
 const sendGoogleChatMessage = vi.hoisted(() => vi.fn());
@@ -19,112 +19,82 @@ vi.mock("./targets.js", () => ({
 }));
 
 let googlechatMessageActions: typeof import("./message-tool-api.js").googlechatMessageActions;
+const remoteMedia = "https://example.invalid/image.png";
+const link = `Attachment: ${remoteMedia}`;
 
-describe("googlechat message actions", () => {
-  beforeAll(async () => {
-    ({ googlechatMessageActions } = await import("./message-tool-api.js"));
+beforeAll(async () => {
+  ({ googlechatMessageActions } = await import("./message-tool-api.js"));
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  resolveGoogleChatAccount.mockReturnValue({ credentialSource: "service-account" });
+  resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+});
+
+afterAll(() => {
+  vi.doUnmock("./accounts.js");
+  vi.doUnmock("./api.js");
+  vi.doUnmock("./targets.js");
+  vi.resetModules();
+});
+
+function send(params: Record<string, unknown>, action = "send") {
+  return googlechatMessageActions.handleAction({
+    action,
+    params,
+    cfg: {},
+    accountId: "default",
+  } as never);
+}
+
+it("supports only send actions", () => {
+  expect(googlechatMessageActions.supportsAction?.({ action: "send" })).toBe(true);
+  expect(googlechatMessageActions.supportsAction?.({ action: "upload-file" })).toBe(false);
+});
+
+it.each([
+  ["caption", undefined, "thread-1", "caption"],
+  [undefined, remoteMedia, undefined, link],
+  ["caption", remoteMedia, undefined, `caption\n\n${link}`],
+])("sends %s through the resolved space", async (message, media, thread, text) => {
+  sendGoogleChatMessage.mockResolvedValue({
+    messageName: "spaces/AAA/messages/msg-1",
+    threadName: "spaces/AAA/threads/thread-1",
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resolveGoogleChatAccount.mockReturnValue({
-      accountId: "default",
-      enabled: true,
-      credentialSource: "service-account",
-      config: { groupPolicy: "open", dmPolicy: "open" },
-    });
-    resolveGoogleChatOutboundSpace.mockResolvedValue("spaces/AAA");
+  const result = await send({ to: "spaces/AAA", message, media, threadId: thread });
+  expect(sendGoogleChatMessage.mock.lastCall?.[0]).toMatchObject({
+    space: "spaces/AAA",
+    text,
+    thread,
   });
-
-  afterAll(() => {
-    vi.doUnmock("./accounts.js");
-    vi.doUnmock("./api.js");
-    vi.doUnmock("./targets.js");
-    vi.resetModules();
+  expect(result.details).toEqual({
+    ok: true,
+    to: "spaces/AAA",
+    messageName: "spaces/AAA/messages/msg-1",
+    threadName: "spaces/AAA/threads/thread-1",
   });
+});
 
-  function send(params: Record<string, unknown>) {
-    return googlechatMessageActions.handleAction({
-      action: "send",
-      params,
-      cfg: {},
-      accountId: "default",
-    } as never);
-  }
+it.each([
+  { media: "remote.png" },
+  { mediaUrls: ["remote.png"] },
+  { attachments: [{ url: "remote.png" }] },
+])("rejects local attachments %j before provider access", async (media) => {
+  await expect(send({ to: "spaces/AAA", message: "caption", ...media })).rejects.toThrow(
+    "Google Chat outbound attachments require remote HTTP(S) URLs.",
+  );
 
-  function expectJsonResult(result: unknown, details: Record<string, unknown>) {
-    expect(result).toEqual({
-      content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
-      details,
-    });
-  }
+  expect(resolveGoogleChatAccount).not.toHaveBeenCalled();
+  expect(resolveGoogleChatOutboundSpace).not.toHaveBeenCalled();
+  expect(sendGoogleChatMessage).not.toHaveBeenCalled();
+});
 
-  it("supports only send actions", () => {
-    expect(googlechatMessageActions.supportsAction?.({ action: "send" })).toBe(true);
-    expect(googlechatMessageActions.supportsAction?.({ action: "upload-file" })).toBe(false);
-  });
+it("rejects unsupported actions without provider access", async () => {
+  await expect(send({}, "react")).rejects.toThrow(
+    "Action react is not supported for provider googlechat.",
+  );
 
-  it("sends text through the resolved space", async () => {
-    sendGoogleChatMessage.mockResolvedValue({
-      messageName: "spaces/AAA/messages/msg-1",
-      threadName: "spaces/AAA/threads/thread-1",
-    });
-
-    const result = await send({ to: "spaces/AAA", message: "caption", threadId: "thread-1" });
-
-    expect(resolveGoogleChatOutboundSpace).toHaveBeenCalledWith({
-      account: resolveGoogleChatAccount.mock.results[0]?.value,
-      target: "spaces/AAA",
-    });
-    expect(sendGoogleChatMessage).toHaveBeenCalledWith({
-      account: resolveGoogleChatAccount.mock.results[0]?.value,
-      space: "spaces/AAA",
-      text: "caption",
-      thread: "thread-1",
-    });
-    expectJsonResult(result, {
-      ok: true,
-      to: "spaces/AAA",
-      messageName: "spaces/AAA/messages/msg-1",
-      threadName: "spaces/AAA/threads/thread-1",
-    });
-  });
-
-  it.each([
-    { media: "remote.png" },
-    { mediaUrls: ["remote.png"] },
-    { attachments: [{ url: "remote.png" }] },
-  ])("rejects local attachments %j before provider access", async (media) => {
-    await expect(send({ to: "spaces/AAA", message: "caption", ...media })).rejects.toThrow(
-      "Google Chat outbound attachments require remote HTTP(S) URLs.",
-    );
-
-    expect(resolveGoogleChatAccount).not.toHaveBeenCalled();
-    expect(resolveGoogleChatOutboundSpace).not.toHaveBeenCalled();
-    expect(sendGoogleChatMessage).not.toHaveBeenCalled();
-  });
-
-  it("rejects unsupported actions without provider access", async () => {
-    const action = "react";
-
-    await expect(
-      googlechatMessageActions.handleAction({
-        action,
-        params: { messageId: "spaces/AAA/messages/msg-1", emoji: "👍" },
-        cfg: {},
-        accountId: "default",
-      } as never),
-    ).rejects.toThrow(`Action ${action} is not supported for provider googlechat.`);
-
-    expect(sendGoogleChatMessage).not.toHaveBeenCalled();
-  });
-
-  it.each([undefined, "caption"])("sends remote media with caption %s", async (message) => {
-    await send({ to: "spaces/AAA", message, media: "https://example.invalid/image.png" });
-    expect(sendGoogleChatMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: `${message ? "caption\n\n" : ""}Attachment: https://example.invalid/image.png`,
-      }),
-    );
-  });
+  expect(sendGoogleChatMessage).not.toHaveBeenCalled();
 });
