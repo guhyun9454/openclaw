@@ -12,8 +12,11 @@ export function createPluginReloadServices(
     "scheduler" | "kernel" | "pluginRuntime" | "pluginWorkspaceDir" | "broadcastPluginEvent"
   >,
   stopServices: ReturnType<typeof createPluginReloadCleanup>["stopPreviousServices"],
+  previousConfig: OpenClawConfig,
 ) {
   const generation = runtime.kernel.pluginRuntimeGeneration;
+  const previousServices = generation.currentServices();
+  const previousRegistry = runtime.pluginRuntime.registry;
   const start = (
     registry: PluginRegistry,
     config: OpenClawConfig,
@@ -36,6 +39,32 @@ export function createPluginReloadServices(
     );
   return {
     start,
+    stopForReplacement(
+      pluginIds: ReadonlySet<string>,
+      retainedMemoryIds: ReadonlySet<string>,
+      hasResourceHandoff: boolean,
+      stopOwner: (strict: boolean, label: string, run: () => Promise<void>) => Promise<void>,
+    ) {
+      const strict = hasResourceHandoff || retainedMemoryIds.size > 0;
+      const selected = new Set([...pluginIds, ...retainedMemoryIds]);
+      return stopOwner(strict, "Plugin service cleanup failed", () =>
+        stopServices(generation.currentServices(), strict, selected),
+      );
+    },
+    prepareRetirement(pluginIds: ReadonlySet<string>, stopHooks: () => Promise<void>) {
+      // Never resolve current services from a delayed predecessor cleanup.
+      return async () => {
+        await stopServices(previousServices, true, pluginIds);
+        await stopHooks();
+      };
+    },
+    async retainFailedCandidate(candidate: PluginServicesHandle, restorePrevious: boolean) {
+      // Retained attempts moved here; preserve custody even if restoration fails.
+      generation.setServices(candidate);
+      if (restorePrevious) {
+        await start(previousRegistry, previousConfig, (handle) => generation.setServices(handle));
+      }
+    },
     async resumeMemory(
       memory: ReturnType<typeof prepareMemoryRuntimeReload> | undefined,
       config: OpenClawConfig,

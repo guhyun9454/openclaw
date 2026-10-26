@@ -11,6 +11,7 @@ import {
   useNoBundledPlugins,
   writePlugin,
 } from "../plugins/loader.test-fixtures.js";
+import { PluginInstanceUnavailableError } from "../plugins/plugin-instance-error.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -29,11 +30,15 @@ function configWithSecret(value: unknown): OpenClawConfig {
   } as OpenClawConfig;
 }
 
-function activate(value: string): void {
+function activate(value: string, enabled = true): void {
+  const sourceConfig = configWithSecret(secretRef);
+  const config = configWithSecret(value);
+  sourceConfig.plugins!.entries![pluginId]!.enabled = enabled;
+  config.plugins!.entries![pluginId]!.enabled = enabled;
   activateSecretsRuntimeSnapshotState({
     snapshot: {
-      sourceConfig: configWithSecret(secretRef),
-      config: configWithSecret(value),
+      sourceConfig,
+      config,
       authStores: [],
       authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       authStoreSnapshotsRevision: getRuntimeAuthProfileStoreSnapshotsRevision(),
@@ -81,6 +86,7 @@ describe("prepared plugin secret input authority", () => {
     const registry = loadOpenClawPlugins({ config, activate: false, cache: false });
     const instance = loadedInstance(registry);
     const readSecret = () => getPreparedPluginSecretInput(pluginId, "apiKey");
+    const admitted = instance.retainConsumer();
 
     const started = createDeferredCore();
     const release = createDeferredCore();
@@ -94,6 +100,14 @@ describe("prepared plugin secret input authority", () => {
       });
       await started.promise;
 
+      instance.quiesce();
+      expect(admitted.run(readSecret)).toMatchObject({ value: "old-key" });
+      expect(() => instance.run(readSecret)).toThrow(PluginInstanceUnavailableError);
+      activate("old-key", false);
+      expect(admitted.run(readSecret).value).toBeUndefined();
+      activate("old-key");
+      admitted.release();
+
       const disposal = instance.dispose();
       replacementRegistry = loadOpenClawPlugins({ config, activate: false, cache: false });
       const replacement = loadedInstance(replacementRegistry);
@@ -105,6 +119,7 @@ describe("prepared plugin secret input authority", () => {
       await expect(disposal).resolves.toEqual({ errors: [] });
     } finally {
       release.resolve();
+      admitted.release();
       await disposePluginRegistryInstances(registry);
       if (replacementRegistry) {
         await disposePluginRegistryInstances(replacementRegistry);

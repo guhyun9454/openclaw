@@ -5,7 +5,7 @@ import {
   createPluginArgumentView,
   getPluginMethodArgumentKind,
 } from "./plugin-instance-argument-views.js";
-import { pluginInstanceInvocation } from "./plugin-instance-invocation.js";
+import { pluginInstanceInvocation, retainPluginOwnerWork } from "./plugin-instance-invocation.js";
 import type { PluginInstanceInvocation } from "./plugin-instance-invocation.types.js";
 import { PluginFactoryBinding } from "./plugin-instance-owned-values.js";
 import {
@@ -15,24 +15,13 @@ import {
   setPluginOriginalValue,
   type PluginInstanceHandle,
 } from "./plugin-instance-scope.js";
-import type { PluginInstanceCallLease } from "./plugin-instance.types.js";
+import type { PluginInstanceCallLease, PluginIteratorAdmission } from "./plugin-instance.types.js";
 import { mapPluginReturnPromise, resolvePluginReturnPromise } from "./plugin-return-value.js";
 import { createPluginToolExecutionBinding } from "./plugin-tool-execution.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { getPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
 
 const { values: valueInstances } = pluginInstanceState;
-/** An iterator keeps the admission that owns its pending protocol operations. */
-type PluginIteratorAdmission = {
-  readonly origin: PluginInstanceInvocation;
-  reenter: <T>(run: () => T) => T;
-  readonly done: boolean;
-  readonly active: boolean;
-  invoke: <T>(run: () => T) => T;
-  close: () => void;
-  call: (key: PropertyKey, method: Function | undefined, args: unknown[]) => Promise<unknown>;
-};
-
 const DATA_FIELDS = new Set([
   "parameters",
   "schema",
@@ -93,8 +82,8 @@ function bindNativeReceiver<T, R>(invoke: (receiver: T, args: unknown[]) => R) {
 type PluginInstanceBindingOwner = {
   instance: PluginInstanceHandle;
   enter: <T>(token: object, run: () => T) => T;
-  invoke: <T>(run: () => T) => T;
-  lease: () => PluginInstanceCallLease;
+  invoke: <T>(run: () => T, lease?: PluginInstanceCallLease) => T;
+  lease: (options?: { joinDisposal?: boolean; ownerLifetime?: true }) => PluginInstanceCallLease;
   hasToken: (token: object) => boolean;
   isConsumerToken: (token: object) => boolean;
 };
@@ -103,6 +92,7 @@ type PluginInstanceBindingOwner = {
 export function createPluginInstanceBindings(bindings: PluginInstanceBindingOwner) {
   const factories = new WeakMap<object, true | "tool" | readonly PropertyKey[]>();
   return {
+    retainOwnerWork: () => retainPluginOwnerWork(bindings),
     admitFactory: (
       factory: (...args: never[]) => unknown,
       resultCallbacks?: "tool" | readonly PropertyKey[],

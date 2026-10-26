@@ -20,9 +20,12 @@ import {
 } from "./plugin-instance-scope.js";
 import { waitForPluginInstanceSettlement } from "./plugin-instance-settlement.js";
 import type {
+  PluginInstanceCall,
   PluginInstanceCallLease,
   PluginInstanceConsumer,
+  PluginInstanceConsumerState,
   PluginInstanceDisposalResult,
+  PluginInstanceDisposalCleanup as DisposalCleanup,
   PluginInstanceLifecycle,
   PluginModuleLoaderRecovery,
   PluginRetentionSnapshot,
@@ -40,12 +43,6 @@ import { getPluginRuntimeGenerationRegistry } from "./runtime/generation-scope.j
 const { values: valueInstances } = pluginInstanceState;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const log = createSubsystemLogger("plugins/cleanup");
-type PluginInstanceCall = { registry?: PluginRegistry; cleanup: boolean; ownerJoined: boolean };
-type DisposalCleanup = {
-  failures: unknown[];
-  hostFailure?: { error: unknown };
-  moduleCleanups: Array<() => void | Promise<void>>;
-};
 
 export class PluginInstance {
   readonly slots = new Map<string | symbol, { runtime: unknown }>();
@@ -65,22 +62,14 @@ export class PluginInstance {
   private callsExpired = false;
   private forcedRetirement = false;
   private disposalFailures?: Set<unknown>;
-  private readonly consumers = new Map<
-    object,
-    {
-      active: boolean;
-      completion: Promise<void>;
-      registry?: PluginRegistry;
-      kind: "work" | "custody";
-    }
-  >();
+  private readonly consumers = new Map<object, PluginInstanceConsumerState>();
   private readonly cleanups = new Map<() => void | Promise<void>, "plugin" | "module">();
   private readonly waiters = new Set<() => void>();
   private readonly bindings = createPluginInstanceBindings({
     instance: this,
     enter: (token, run) => this.enter(token, run),
-    invoke: (run) => this.invoke(run),
-    lease: () => this.lease(),
+    invoke: (run, lease) => this.invoke(run, lease),
+    lease: (options) => this.lease(options),
     hasToken: (token) => this.hasToken(token),
     isConsumerToken: (token) => this.consumers.has(token),
   });
@@ -126,6 +115,7 @@ export class PluginInstance {
       runInBackgroundContext: createPluginBackgroundRunner(
         this,
         (token) => this.calls.get(token)?.cleanup === true,
+        (cleanup) => this.addCleanup(cleanup, "plugin"),
       ),
     });
   }
@@ -223,6 +213,14 @@ export class PluginInstance {
     return this.activeCall() ? this.invoke(consume) : this.run(consume);
   }
 
+  /** Service owners stop and join this authority before instance teardown. */
+  retainOwnerWork() {
+    if (!this.accepting || this.owner?.revoked) {
+      throw this.refuseFreshCall(this.accepting);
+    }
+    return this.bindings.retainOwnerWork();
+  }
+
   get hasRetainedConsumers(): boolean {
     return this.consumers.size > 0;
   }
@@ -258,7 +256,20 @@ export class PluginInstance {
   }
 
   get ordinaryCallCount(): number {
-    return [...this.calls.values()].filter((call) => !call.cleanup).length;
+    return [...this.calls.values()].filter((call) => !call.cleanup && !call.ownerLifetime).length;
+  }
+
+  /** Background owners stop during teardown; only finite users delay supersession cleanup. */
+  get admittedWorkCount(): number {
+    return (
+      this.retainedWorkCount +
+      [...this.calls.values()].filter((call) => !call.cleanup && !call.ownerJoined).length
+    );
+  }
+
+  waitForAdmittedWork(signal: AbortSignal): Promise<void> {
+    const settled = () => this.admittedWorkCount === 0;
+    return waitForPluginInstanceSettlement(this.pluginId, this.waiters, settled, signal);
   }
 
   /** Observe admitted work without closing callbacks or idle publication custody. */
@@ -278,12 +289,9 @@ export class PluginInstance {
 
   /** Observe when a pre-stop replacement drain would pass: no retained work or calls, cleanup included. */
   waitForIdle(signal: AbortSignal): Promise<void> {
-    return waitForPluginInstanceSettlement(
-      this.pluginId,
-      this.waiters,
-      () => this.calls.size === 0 && this.retainedWorkCount === 0,
-      signal,
-    );
+    const settled = () =>
+      [...this.calls.values()].every((call) => call.ownerLifetime) && this.retainedWorkCount === 0;
+    return waitForPluginInstanceSettlement(this.pluginId, this.waiters, settled, signal);
   }
 
   /** Refuse a caller-dependent reload before stopping its serving instance. */
@@ -488,7 +496,7 @@ export class PluginInstance {
   }
 
   private lease(
-    options: { registry?: PluginRegistry } & (
+    options: { registry?: PluginRegistry; ownerLifetime?: true } & (
       | { cleanup?: false; joinDisposal?: boolean }
       | { cleanup: true }
     ) = {},
@@ -512,7 +520,12 @@ export class PluginInstance {
       cleanup ? "cleanup" : "call",
       cleanup ? "cleanup" : "call",
     );
-    this.calls.set(token, { registry, cleanup, ownerJoined: !cleanup && !joinDisposal });
+    this.calls.set(token, {
+      registry,
+      cleanup,
+      ownerJoined: !cleanup && !joinDisposal,
+      ownerLifetime: options.ownerLifetime,
+    });
     return {
       token,
       release: () => {
@@ -582,7 +595,10 @@ export class PluginInstance {
     this.quiesce();
     const ownToken = this.activeCall()?.token;
     try {
-      await this.waitForCalls((token) => token === ownToken, options?.signal);
+      await this.waitForCalls(
+        (token) => token === ownToken || this.calls.get(token)?.ownerLifetime === true,
+        options?.signal,
+      );
       if (options?.includeConsumers) {
         await waitForPluginInstanceSettlement(
           this.pluginId,
@@ -602,22 +618,13 @@ export class PluginInstance {
     ignored: (token: object) => boolean,
     signal?: AbortSignal,
   ): Promise<void> {
-    const settled = () => [...this.calls.keys()].every(ignored);
-    if (signal) {
-      // Reload owns its observation budget; disposal keeps its independent deadline.
-      return waitForPluginInstanceSettlement(this.pluginId, this.waiters, settled, signal);
-    }
-    const deadline = new AbortController();
-    const timer = setTimeout(() => {
-      deadline.abort(
-        new Error(`Plugin ${this.pluginId} still has active calls after ${SHUTDOWN_TIMEOUT_MS}ms`),
-      );
-    }, SHUTDOWN_TIMEOUT_MS);
-    try {
-      await waitForPluginInstanceSettlement(this.pluginId, this.waiters, settled, deadline.signal);
-    } finally {
-      clearTimeout(timer);
-    }
+    // Reload owns its observation budget; disposal keeps its independent deadline.
+    return waitForPluginInstanceSettlement(
+      this.pluginId,
+      this.waiters,
+      () => [...this.calls.keys()].every(ignored),
+      signal ?? SHUTDOWN_TIMEOUT_MS,
+    );
   }
 
   get disposing(): boolean {

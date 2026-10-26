@@ -10,6 +10,7 @@ import {
   createPluginRegistryOwner,
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
+  waitForPluginRegistryRetirement,
 } from "../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
@@ -109,6 +110,33 @@ describe("plugins.inspect runtime retention disclosure", () => {
     expect(await inspect(registry)).toMatchObject({ runtimeRetention: null });
   });
 
+  it("reports a retained predecessor until its last holder releases", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const previous = captureActivePluginRegistrySnapshot();
+      const fixture = retainedPlugin();
+      const successor = createEmptyPluginRegistry();
+      const owner = createPluginRegistryOwner(fixture.registry);
+      setActivePluginRegistry(fixture.registry);
+      try {
+        setActivePluginRegistry(successor);
+        owner.publish(successor, async () => {});
+        expect(await inspect(successor)).toMatchObject({
+          runtimeRetention: {
+            predecessors: [{ pluginId: inspection.plugin.id, total: 1 }],
+          },
+        });
+        fixture.release();
+        await waitForPluginRegistryRetirement(fixture.registry);
+        expect(await inspect(successor)).toMatchObject({ runtimeRetention: null });
+        expect(fixture.run).not.toHaveBeenCalled();
+      } finally {
+        fixture.release();
+        await owner.close();
+        restoreActivePluginRegistrySnapshot(previous);
+      }
+    });
+  });
+
   it.each(["no client", "read-only operator", "remote package"])(
     "omits cross-session diagnostics for %s",
     async (visibility) => {
@@ -169,8 +197,10 @@ describe("plugins.inspect runtime retention disclosure", () => {
         expect(await pending).toMatchObject({
           runtimeRetention: {
             pluginId: inspection.plugin.id,
-            total: 1,
-            references: [{ owner: acquisitionOwner }],
+            // The displaced registry may also have started terminal cleanup.
+            references: expect.arrayContaining([
+              expect.objectContaining({ owner: acquisitionOwner }),
+            ]),
           },
         });
         expect(request.run).not.toHaveBeenCalled();

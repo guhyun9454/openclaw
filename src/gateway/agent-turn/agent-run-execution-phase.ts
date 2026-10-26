@@ -219,13 +219,15 @@ async function executeAgentRun(
             abortSignal: abortController.signal,
           },
           async () =>
-            withPreparedModelRuntimePluginGenerationScope(
-              replyDispatchRuntime.pluginGeneration,
-              () => {
-                dispatched = true;
-                return dispatchAgentRunWithMedia(dispatch, params);
-              },
-              () => (leaseActive ? preparedModelRuntimeLease.snapshot : undefined),
+            preparedModelRuntimeLease.run(() =>
+              withPreparedModelRuntimePluginGenerationScope(
+                replyDispatchRuntime.pluginGeneration,
+                () => {
+                  dispatched = true;
+                  return dispatchAgentRunWithMedia(dispatch, params);
+                },
+                () => (leaseActive ? preparedModelRuntimeLease.snapshot : undefined),
+              ),
             ),
         ),
       );
@@ -627,8 +629,8 @@ async function executeAgentRun(
               abortController: prepared.activeRunAbort.controller,
               cleanupAbortController: cleanupAdmittedRun,
               onSettled: params.restoredCronContinuation
-                ? async ({ terminalOutcome, onRecovered }) =>
-                    await params.releaseCronContinuationClaimWithRecovery(
+                ? ({ terminalOutcome, onRecovered }) =>
+                    params.releaseCronContinuationClaimWithRecovery(
                       { terminalOutcome },
                       onRecovered,
                     )
@@ -656,10 +658,9 @@ async function executeAgentRun(
         try {
           if (!dispatched) {
             try {
-              const restoreAdmittedRecovery = prepared.restoreAdmittedRestartRecoveryInterrupted;
-              if (restoreAdmittedRecovery) {
+              if (prepared.restoreAdmittedRestartRecoveryInterrupted) {
                 pendingRecovery ??= await repairMainSessionRecoveryMutation({
-                  mutation: restoreAdmittedRecovery,
+                  mutation: prepared.restoreAdmittedRestartRecoveryInterrupted,
                   onError: diagnostics.warning("failed to restore undispatched restart recovery"),
                 });
               }

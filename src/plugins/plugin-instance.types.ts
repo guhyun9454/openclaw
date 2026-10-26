@@ -1,5 +1,38 @@
 import type { Static } from "typebox";
 import type { PluginRuntimeRetentionSchema } from "../../packages/gateway-protocol/src/schema/plugin-retention.js";
+import type { PluginInstanceInvocation } from "./plugin-instance-invocation.types.js";
+import type { PluginRegistry } from "./registry-types.js";
+
+/** An iterator keeps the admission that owns its pending protocol operations. */
+export type PluginIteratorAdmission = {
+  readonly origin: PluginInstanceInvocation;
+  reenter: <T>(run: () => T) => T;
+  readonly done: boolean;
+  readonly active: boolean;
+  invoke: <T>(run: () => T) => T;
+  close: () => void;
+  call: (key: PropertyKey, method: Function | undefined, args: unknown[]) => Promise<unknown>;
+};
+
+export type PluginInstanceCall = {
+  registry?: PluginRegistry;
+  cleanup: boolean;
+  ownerJoined: boolean;
+  ownerLifetime?: true;
+};
+
+export type PluginInstanceConsumerState = {
+  active: boolean;
+  completion: Promise<void>;
+  registry?: PluginRegistry;
+  kind: "work" | "custody";
+};
+
+export type PluginInstanceDisposalCleanup = {
+  failures: unknown[];
+  hostFailure?: { error: unknown };
+  moduleCleanups: Array<() => void | Promise<void>>;
+};
 
 /** Payload-free facts shared with administrator inspection. */
 export type PluginRetentionSnapshot = Static<typeof PluginRuntimeRetentionSchema>;
