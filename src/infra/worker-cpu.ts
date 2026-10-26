@@ -81,6 +81,7 @@ const trackedWorkers = resolveGlobalSingleton(Symbol.for("openclaw.workerCpuSour
     postgresPoolSelfRootCount: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)),
     postgresBridgeObservers: new Set<() => void>(),
     revision: 0,
+    // SAFETY: Starts empty; only registry-owned snapshots are assigned below.
     cpuSources: undefined as ReturnType<typeof getTrackedWorkerCpuSources> | undefined,
     nextPoolId: 0,
     poolIds: new WeakMap<object, number>(),

@@ -6,19 +6,17 @@
  * --retained exercises the lifecycle-thread RPC used by task pools.
  */
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { writeFileSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { loadavg } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
-import type { Worker } from "node:worker_threads";
+import type { WorkerLifecycle } from "@openclaw/worker-runtime/lifecycle";
 import { createCpuTrackedWorker, getTrackedWorkerCpuSources } from "../../src/infra/worker-cpu.ts";
 import {
   closeDefaultRetainedNativeWorkerSource,
   createRetainedNativeWorker,
 } from "../../src/infra/worker-native-lifecycle.ts";
-import type { RetainedNativeWorker } from "../../src/infra/worker-native-lifecycle.types.ts";
 import { startGatewayBenchDiagnostics } from "../lib/gateway-bench-diagnostics.ts";
 import { parseStrictIntegerOption } from "../lib/strict-integer-option.ts";
 
@@ -46,7 +44,7 @@ writeFileSync(values.output, "", { flag: "wx" });
 if (values.allocations) {
   writeFileSync(`${values.output}.heapprofile`, "", { flag: "wx" });
 }
-const workers: (Worker | RetainedNativeWorker)[] = [];
+const workers: WorkerLifecycle[] = [];
 const inspector = values.allocations ? new Session() : undefined;
 try {
   for (let index = 0; index < workerCount; index++) {
@@ -58,7 +56,15 @@ try {
       ),
     );
   }
-  await Promise.all(workers.map((worker) => once(worker, "message")));
+  await Promise.all(
+    workers.map(
+      (worker) =>
+        new Promise<void>((resolve, reject) => {
+          worker.on("message", () => resolve());
+          worker.on("error", reject);
+        }),
+    ),
+  );
   const trackedCount = getTrackedWorkerCpuSources().workers.length;
   assert.ok(trackedCount >= workerCount);
   const sample = async () => {
