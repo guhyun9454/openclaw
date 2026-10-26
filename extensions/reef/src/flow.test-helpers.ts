@@ -44,10 +44,7 @@ export function flowStores(deliveredMaxEntries?: number, reviewsMaxEntries?: num
     runtime,
     stateDir,
     reviews: new ReviewApprovalStore(runtime, reviewsMaxEntries),
-    delivered:
-      deliveredMaxEntries === undefined
-        ? new ReefDeliveredStore(runtime)
-        : new ReefDeliveredStore(runtime, deliveredMaxEntries),
+    delivered: new ReefDeliveredStore(runtime, deliveredMaxEntries),
   };
 }
 

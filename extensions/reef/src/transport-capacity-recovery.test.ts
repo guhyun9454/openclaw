@@ -27,21 +27,19 @@ import type { InboxEntry } from "./types.js";
 async function fixture(peers = ["alice"], deliveredMaxEntries = REEF_DELIVERED_MAX_ENTRIES) {
   const keys = reefKeys();
   const identities = peers.map((peer) => ({ peer, identity: generateIdentity() }));
-  const entries = await Promise.all(
-    identities.map(async ({ peer, identity }, index): Promise<InboxEntry> => {
-      const seq = index + 1;
-      const id = `01JZ${String(seq).padStart(22, "0")}`;
-      const envelope = seal({
-        id,
-        from: `${peer}#1`,
-        to: "bob#1",
-        body: { text: `message ${seq}` },
-        senderSigningSecretKey: identity.signing.secretKey,
-        recipientEncryptionPublicKey: keys.encryption.publicKey,
-      });
-      return { seq, peer, id, kind: "message", envelope, ts: Math.floor(Date.now() / 1_000) };
-    }),
-  );
+  const entries = identities.map(({ peer, identity }, index): InboxEntry => {
+    const seq = index + 1;
+    const id = `01JZ${String(seq).padStart(22, "0")}`;
+    const envelope = seal({
+      id,
+      from: `${peer}#1`,
+      to: "bob#1",
+      body: { text: `message ${seq}` },
+      senderSigningSecretKey: identity.signing.secretKey,
+      recipientEncryptionPublicKey: keys.encryption.publicKey,
+    });
+    return { seq, peer, id, kind: "message", envelope, ts: Math.floor(Date.now() / 1_000) };
+  });
   const stores = flowStores(deliveredMaxEntries);
   const trusted = openReefTrustStore(stores.runtime, config());
   for (const { peer, identity } of identities) {
@@ -94,54 +92,36 @@ describe("Reef capacity-parked delivery recovery (production connection path)", 
   beforeEach(resetFlowStoresForTests);
   afterEach(resetFlowStoresForTests);
 
-  it("survives delivered-capacity parks from two peers, keeps later entries attemptable, and completes both once capacity frees", async () => {
+  it.each([false, true])("recovers capacity-parked peers (restart=%s)", async (restart) => {
+    const peers = restart ? ["alice"] : ["alice", "carol"];
     const { stores, raw, relay, onIngress, persisted, entries, connect } = await fixture(
-      ["alice", "carol"],
-      2,
+      peers,
+      peers.length,
     );
-    await stores.delivered.confirm("occupied-1");
-    await stores.delivered.confirm("occupied-2");
-    const inbox = await connect();
-
-    // Both entries reach ingress, but capacity blocks confirmation and cursor progress.
+    for (const peer of peers) {
+      await stores.delivered.confirm(peer);
+    }
+    let inbox = await connect();
     await inbox.drain();
-    expect(onIngress).toHaveBeenCalledTimes(2);
+    expect(onIngress).toHaveBeenCalledTimes(peers.length);
     expect(relay.acknowledge).not.toHaveBeenCalled();
     expect(persisted).toEqual([]);
-
-    raw.delete("occupied-1");
-    raw.delete("occupied-2");
+    for (const peer of peers) {
+      raw.delete(peer);
+    }
+    if (restart) {
+      inbox = await connect(createRuntime(stores.stateDir));
+    }
     await inbox.drain();
-    expect(onIngress).toHaveBeenCalledTimes(4);
-    expect(relay.acknowledge).toHaveBeenCalledTimes(2);
+    expect(onIngress).toHaveBeenCalledTimes(2 * peers.length);
+    expect(relay.acknowledge).toHaveBeenCalledTimes(peers.length);
     for (const entry of entries) {
       await expect(stores.delivered.status(entry.id)).resolves.toBe("delivered");
     }
-    expect(persisted.at(-1)).toBe(2);
-
+    expect(persisted.at(-1)).toBe(peers.length);
     await inbox.drain();
-    expect(onIngress).toHaveBeenCalledTimes(4);
-    expect(relay.acknowledge).toHaveBeenCalledTimes(2);
-  });
-
-  it("a crash after ingress re-dispatches once on restart when capacity had blocked confirm", async () => {
-    const { stores, raw, relay, onIngress, persisted, entries, connect } = await fixture(
-      ["alice"],
-      1,
-    );
-    await stores.delivered.confirm("occupied");
-    await (await connect()).drain();
-    expect(onIngress).toHaveBeenCalledTimes(1);
-    expect(relay.acknowledge).not.toHaveBeenCalled();
-    expect(persisted).toEqual([]);
-
-    // The persisted replay survives a restart; absent confirmation allows one redispatch.
-    raw.delete("occupied");
-    await (await connect(createRuntime(stores.stateDir))).drain();
-    expect(onIngress).toHaveBeenCalledTimes(2);
-    await expect(stores.delivered.status(entries[0]!.id)).resolves.toBe("delivered");
-    expect(relay.acknowledge).toHaveBeenCalledTimes(1);
-    expect(persisted.at(-1)).toBe(1);
+    expect(onIngress).toHaveBeenCalledTimes(2 * peers.length);
+    expect(relay.acknowledge).toHaveBeenCalledTimes(peers.length);
   });
 
   it("legacy stateless delivered markers suppress re-ingress and acknowledge on the next poll", async () => {

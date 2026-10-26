@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { generateIdentity, type Verdict } from "../protocol/index.js";
 import { MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
 import { openReefAuditStore } from "./audit-state.js";
+import { handleReefCommand } from "./commands.js";
 import { prepareReefMessageId, ReefMessageFlow } from "./flow.js";
 import {
   allow,
@@ -14,6 +15,8 @@ import {
   reefKeys,
   resetFlowStoresForTests,
 } from "./flow.test-helpers.js";
+import { ReefFriendManager } from "./friends.js";
+import { createReefRuntimeAuthority } from "./runtime.js";
 import { getReefReviewOperationState } from "./state.js";
 import { ReefTransportClient } from "./transport.js";
 import { openReefTrustStore } from "./trust-store.js";
@@ -23,6 +26,7 @@ describe("Reef worker outbound composition", () => {
   const peer = generateIdentity();
   const keys = reefKeys();
   const classify = guard(allow);
+  const authority = createReefRuntimeAuthority();
   const fetcher = vi.fn<typeof fetch>(async () => Response.json({ id: "sent", status: "queued" }));
   let stores: ReturnType<typeof flowStores>;
   let trusted: ReturnType<typeof openReefTrustStore>;
@@ -50,6 +54,14 @@ describe("Reef worker outbound composition", () => {
     audit = openReefAuditStore(stores.runtime, new Uint8Array(32).fill(1));
     await trusted.set("alice", peerTrust(peer));
     flow = makeFlow();
+    authority.activate({
+      flow,
+      reviews: stores.reviews,
+      friends: new ReefFriendManager(flow.options.transport, trusted, {
+        list: async () => [],
+        remove: async () => false,
+      }),
+    });
     await flow.send("alice", "warm the operation owners");
   });
   beforeEach(async () => {
@@ -59,7 +71,10 @@ describe("Reef worker outbound composition", () => {
     fetcher.mockClear();
   });
   afterEach(() => vi.restoreAllMocks());
-  afterAll(resetFlowStoresForTests);
+  afterAll(() => {
+    authority.release();
+    return resetFlowStoresForTests();
+  });
 
   const send = (id: string) => flow.send("alice", "private coordination", { messageId: id });
   async function requestReview() {
@@ -82,6 +97,26 @@ describe("Reef worker outbound composition", () => {
       expect(await trusted.readOutboundDelivery(recipient, id)).toBeUndefined();
     }
   }
+
+  it("lists pending reviews and refuses owner commands after revocation", async () => {
+    const { digest } = await requestReview();
+    await expect(handleReefCommand({ args: "review list" })).resolves.toEqual({
+      text: `${digest} outbound bob#1 -> alice#1 safe`,
+    });
+    for (const action of ["approve", "deny"]) {
+      await expect(
+        handleReefCommand({
+          args: `review ${action} ${digest}`,
+          senderIsOwner: true,
+          assertOwnerCurrent: () => {
+            throw new Error("owner revoked");
+          },
+        }),
+      ).rejects.toThrow("owner revoked");
+      expect((await stores.reviews.observeDecision(digest)).value).toBe("pending");
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 
   it("persists proposal, verdict, envelope and exact delivery without host SQL", async () => {
     const id = prepareReefMessageId();
@@ -132,23 +167,26 @@ describe("Reef worker outbound composition", () => {
   });
 
   it.each([
-    [
-      "content denial",
-      allow.model,
-      { ...allow, decision: "deny", category: "confidential" },
-      "confidential",
-    ],
-    ["wrong model", allow.model, { ...allow, model: "other-2026-07-12" }, "guard_failure"],
-    ["floating model", "mock-latest", { ...allow, model: "mock-latest" }, "guard_failure"],
-    ["wrong policy", allow.model, { ...allow, policyVersion: "v2" }, "guard_failure"],
+    ["content denial", { decision: "deny", category: "confidential" }, false],
+    ["wrong model", { model: "other-2026-07-12" }, false],
+    ["floating model", { model: "mock-latest" }, false],
+    ["wrong policy", { policyVersion: "v2" }, false],
     // The external guard boundary must reject a structurally invalid adapter result.
-    ["unknown decision", allow.model, { ...allow, decision: "maybe" }, "guard_failure"],
+    ["unknown decision", { decision: "maybe" }, false],
+    ["approved wrong model", { model: "wrong-2026-07-12" }, true],
+    ["approved content denial", { decision: "deny", category: "confidential" }, true],
   ] as const)(
     "refuses %s before recording delivery or dispatching",
-    async (_name, model, verdict, category) => {
+    async (_name, override, afterApproval) => {
+      const verdict = { ...allow, ...override };
+      const model = verdict.model === "mock-latest" ? verdict.model : allow.model;
+      const category = verdict.decision === "deny" ? "confidential" : "guard_failure";
       const adapter = { ...guard(allow), pinnedModel: model };
       adapter.classify.mockResolvedValue(verdict as Verdict);
-      const id = prepareReefMessageId();
+      const { id, digest } = afterApproval ? await requestReview() : { id: prepareReefMessageId() };
+      if (digest) {
+        await stores.reviews.decide(digest, true);
+      }
       const onPlatformSendDispatch = vi.fn(async () => {});
       await expect(
         makeFlow(stores.reviews, adapter).send("alice", "private coordination", {
@@ -188,20 +226,6 @@ describe("Reef worker outbound composition", () => {
       "pending",
     );
     await expectNoDelivery(id, ["alice", "carol"]);
-  });
-
-  it.each([
-    ["wrong model", { ...allow, model: "wrong-2026-07-12" }, "guard_failure"],
-    ["content denial", { ...allow, decision: "deny", category: "confidential" }, "confidential"],
-  ] as const)("admits the post-approval verdict again: %s", async (_name, verdict, category) => {
-    const { id, digest } = await requestReview();
-    await stores.reviews.decide(digest, true);
-    classify.classify.mockResolvedValue(verdict);
-    await expect(send(id)).rejects.toMatchObject({
-      stage: "guard",
-      verdict: { decision: "deny", category },
-    });
-    await expectNoDelivery(id);
   });
 
   it("settles a denied review without classifying again", async () => {
