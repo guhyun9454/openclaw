@@ -185,6 +185,8 @@ function messageFields(body: string) {
   return { body, bodyForAgent: body, rawBody: body, commandBody: body };
 }
 
+const imageDownload = { buffer: Buffer.from("image"), contentType: "image/png" };
+
 it("suppresses bot loops before creating typing messages", async () => {
   const eventTimeMs = Date.parse("2026-03-22T00:00:00.000Z");
   const accountId = `bot-loop-typing-${eventTimeMs}`;
@@ -228,7 +230,7 @@ it("suppresses bot loops before creating typing messages", async () => {
 it("downloads every file in source order and preserves metadata-only positions", async () => {
   const { buildContext, dispatch, runTurn, saveMediaBuffer } = createHarness();
   apiMocks.downloadGoogleChatMedia
-    .mockResolvedValueOnce({ buffer: Buffer.from("image"), contentType: "image/png" })
+    .mockResolvedValueOnce(imageDownload)
     .mockResolvedValueOnce({ buffer: Buffer.from("document"), contentType: "application/pdf" });
   saveMediaBuffer
     .mockResolvedValueOnce({ path: "/tmp/first.png", contentType: "image/png" })
@@ -260,30 +262,6 @@ it("downloads every file in source order and preserves metadata-only positions",
     }),
   );
   expect(readGoogleChatTestIngest(runTurn)).toMatchObject({ textForAgent: notice });
-});
-
-it("continues after oversized files and emits their notice once", async () => {
-  const { dispatch, runTurn, saveMediaBuffer } = createHarness();
-  const runtime = createRuntimeSpies();
-  const oversized = new MediaFetchError("max_bytes", "exceeds max bytes");
-  apiMocks.downloadGoogleChatMedia
-    .mockRejectedValueOnce(oversized)
-    .mockRejectedValueOnce(oversized)
-    .mockResolvedValueOnce({ buffer: Buffer.from("image"), contentType: "image/png" });
-  await dispatch(
-    {
-      id: "oversized-first",
-      attachments: [attachment("large-1"), attachment("large-2"), attachment("small", "image/png")],
-    },
-    { runtime },
-  );
-
-  expect(apiMocks.downloadGoogleChatMedia).toHaveBeenCalledTimes(3);
-  expect(saveMediaBuffer).toHaveBeenCalledOnce();
-  expect(readGoogleChatTestIngest(runTurn)).toMatchObject({
-    textForAgent: "[Google Chat attachment too large; maximum 10 MB]",
-  });
-  expect(runtime.error).toHaveBeenCalledOnce();
 });
 
 it("honors an inbound media cap below one MiB", async () => {
@@ -365,7 +343,7 @@ it.each([
 ])("keeps an unclassified fetch failure retryable: $name", async (error) => {
   const { dispatch, runTurn } = createHarness();
   apiMocks.downloadGoogleChatMedia
-    .mockResolvedValueOnce({ buffer: Buffer.from("image"), contentType: "image/png" })
+    .mockResolvedValueOnce(imageDownload)
     .mockRejectedValueOnce(error);
   await expect(
     dispatch({
@@ -398,13 +376,14 @@ it.each([
       accountId: "work",
       stateDir,
     });
-    const { buildContext, dispatch, runTurn } = createHarness();
+    const { buildContext, dispatch, runTurn, saveMediaBuffer } = createHarness();
     const runtime = createRuntimeSpies();
     const receivedBodies: string[] = [];
     const receivedMedia: unknown[] = [];
     apiMocks.downloadGoogleChatMedia
-      .mockResolvedValueOnce({ buffer: Buffer.from("image"), contentType: "image/png" })
-      .mockRejectedValueOnce(error);
+      .mockRejectedValueOnce(error)
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(imageDownload);
     runTurn.mockImplementation(
       async (params: { turnAdoptionLifecycle?: GoogleChatIngressLifecycle }) => {
         const context = buildContext.mock.calls.at(-1)?.[0] as {
@@ -426,7 +405,7 @@ it.each([
     const first = makeEvent({
       id: failure,
       text: "first caption",
-      attachments: [attachment("available", "image/png"), attachment(failure)],
+      attachments: [attachment(failure), attachment(failure), attachment("available", "image/png")],
     });
     const second = makeEvent({ id: "follow-up", text: "next message" });
 
@@ -439,9 +418,13 @@ it.each([
 
       expect(receivedBodies).toEqual([`first caption\n\n${notice}`, "next message"]);
       expect(receivedMedia[0]).toEqual([
-        expect.objectContaining({ path: "/tmp/googlechat-first.png", contentType: "image/png" }),
         expect.objectContaining({ contentType: "application/pdf" }),
+        expect.objectContaining({ contentType: "application/pdf" }),
+        expect.objectContaining({ path: "/tmp/googlechat-first.png", contentType: "image/png" }),
       ]);
+      expect(apiMocks.downloadGoogleChatMedia).toHaveBeenCalledTimes(3);
+      expect(saveMediaBuffer).toHaveBeenCalledOnce();
+      expect(runtime.error).toHaveBeenCalledOnce();
       expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining(notice));
       expect(await queue.listPending({ limit: "all" })).toEqual([]);
       expect(await queue.listClaims()).toEqual([]);
