@@ -300,6 +300,7 @@ const synchronousScopes = new Map<string, ReadonlyMap<string, number>>([
     "src/state/openclaw-state-db-readonly.ts",
     new Map([["withExistingOpenClawStateDatabaseReadOnly", 0]]),
   ],
+  ["src/state/openclaw-agent-db-readonly.ts", new Map([["withOpenClawAgentDatabaseReadOnly", 0]])],
   ["src/state/openclaw-state-db.ts", new Map([["runOpenClawStateWriteTransaction", 0]])],
   ["src/state/user-profile-mutation.ts", new Map([["runUserProfileWriteTransaction", 0]])],
   ["src/state/user-profiles-internal.ts", new Map([["readResolvedUserProfile", 1]])],
