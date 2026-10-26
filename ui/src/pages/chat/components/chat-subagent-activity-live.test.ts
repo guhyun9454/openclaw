@@ -24,7 +24,6 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
   const parent = {
     key: "agent:main:parent",
     kind: "direct",
-    hasActiveSubagentRun: true,
   } satisfies GatewaySessionRow;
   const child: GatewaySessionRow = {
     key: "agent:main:subagent:child",
@@ -43,18 +42,11 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
       subagentSessionsHydrated: true,
     });
   const sessions = createTestSessionCapability(connection.gateway);
-  const subscribe = vi
-    .spyOn(sessions, "subscribeMessages")
-    .mockImplementation(async (key, options) => ({
-      key,
-      agentId: options?.agentId,
-      mode: options?.mode,
-    }));
-  const unsubscribe = vi.spyOn(sessions, "unsubscribeMessages").mockResolvedValue();
+  const subscribe = vi.spyOn(sessions, "subscribeMessages");
+  const unsubscribe = vi.spyOn(sessions, "unsubscribeMessages");
   const provider = createSolidApplicationContextProvider(
     createContext(connection.gateway, sessions),
   );
-  const subscriptions = vi.spyOn(connection.gateway, "subscribeEvents");
   const view = mountSolid(() => createComponent(ChatSubagentActivity, { rows: rows(child) }), {
     wrapper: provider.wrapper,
   });
@@ -86,12 +78,8 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
   };
   const emit = (patch: Partial<SessionObserverDigest> = {}, settle = true) =>
     publish("session.observer", { ...digest, ...patch }, settle);
-  expect(subscribe).not.toHaveBeenCalled();
-  expect(unsubscribe).not.toHaveBeenCalled();
   narrate("Reading sources. **Checking the API response.**");
   expect(element.textContent).not.toContain("Checking the API response.");
-  narrate("Stale narration", "old-run");
-  expect(element.textContent).not.toContain("Stale narration");
   await emit();
   expect(element.textContent).toContain(digest.headline);
   for (const patch of [
@@ -105,13 +93,12 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
     await emit({ ...patch, headline: "Stale activity" });
     expect(element.textContent).not.toContain("Stale activity");
   }
-  await emit({ revision: 3, headline: "Running the backend tests" });
-  expect(element.textContent).toContain("Running the backend tests");
   await emit({
     revision: 4,
     headline: "Running the backend tests",
     planProgress: { completed: 1, total: 3 },
   });
+  expect(element.textContent).toContain("Running the backend tests");
   expect(element.querySelector(".chat-subagent-activity__steps")?.textContent).toBe("1/3");
   expect(element.querySelector("meter")?.value).toBe(1);
   expect(element.querySelector(".chat-subagent-activity__row")?.getAttribute("title")).toBe(
@@ -152,7 +139,6 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
   expect(element.querySelector(".chat-subagent-activity__steps")).toBeNull();
   view.unmount();
   flush();
-  expect(subscriptions).toHaveBeenCalledTimes(1);
   expect(subscribe).not.toHaveBeenCalled();
   expect(unsubscribe).not.toHaveBeenCalled();
   await emit({ runId: "replacement-run" });

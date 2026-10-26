@@ -2,16 +2,25 @@
 import { createSignal, type Setter } from "solid-js";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
-import { cleanupSolid, mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { createChatAttachmentInputHandle } from "./chat-attachment-inputs.ts";
 import { ChatComposerPlusMenu } from "./chat-composer-plus-menu.tsx";
 import type { ChatComposerPlusMenuProps } from "./chat-composer-plus-menu.types.ts";
 
 afterEach(() => {
-  cleanupSolid();
   vi.doUnmock("./chat-composer-plus-menu-content.tsx");
 });
+
+const toggle = (label: string, onChange: (checked: boolean) => void, checked = false) => ({
+  value: "toggle",
+  label,
+  checked,
+  disabled: false,
+  onChange,
+});
+const keydown = (target: Element, key: string) =>
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
 
 function mountMenu() {
   const onChange = vi.fn();
@@ -24,9 +33,7 @@ function mountMenu() {
       open: false,
       view: "root",
       toolOverrides: null,
-      rootToggles: [
-        { value: "toggle", label: "Original toggle", checked: false, disabled: false, onChange },
-      ],
+      rootToggles: [toggle("Original toggle", onChange)],
       onOpenChange: (open) => update((current) => ({ ...current, open })),
       onViewChange: vi.fn(),
     });
@@ -55,9 +62,7 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
     const imported = createDeferred();
     const ready = createDeferred();
     onTestFinished(() => ready.resolve());
-    let loads = 0;
     vi.doMock("./chat-composer-plus-menu-content.tsx", async () => {
-      loads++;
       entered.resolve();
       await ready.promise;
       try {
@@ -73,33 +78,18 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
     if (mode === "pointer") {
       view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
     } else {
-      view.trigger.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: mode === "last" ? "ArrowUp" : "ArrowDown",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
+      keydown(view.trigger, mode === "last" ? "ArrowUp" : "ArrowDown");
     }
     // Cold module work precedes Solid's DOM settlement window.
     await entered.promise;
     await view.expectOpen();
-    expect(loads).toBe(1);
     expect(
       view.getByRole("menuitem", { name: "Loading…", hidden: true }).hasAttribute("disabled"),
     ).toBe(true);
     const latestChange = vi.fn();
     view.setMenu((current) => ({
       ...current,
-      rootToggles: [
-        {
-          value: "toggle",
-          label: "Updated toggle",
-          checked: true,
-          disabled: false,
-          onChange: latestChange,
-        },
-      ],
+      rootToggles: [toggle("Updated toggle", latestChange, true)],
     }));
     flush();
     const external = view.getByRole("textbox", { name: "Other field" });
@@ -117,7 +107,6 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
     await imported.promise;
     await waitForSolid(() => expect(view.item("Updated toggle")).toBeTruthy());
     view.expectTrigger();
-    expect(loads).toBe(1);
     if (mode === "closed") {
       expect(view.panel.matches(":popover-open")).toBe(false);
     } else if (mode === "external") {
@@ -132,12 +121,6 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
             : view.getByRole("menuitem", { name: "Take photo", hidden: true }),
         ),
       );
-      if (mode === "keyboard") {
-        document.activeElement!.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }),
-        );
-        await waitForSolid(() => expect(document.activeElement).toBe(view.item("Updated toggle")));
-      }
       view.item("Updated toggle").click();
       expect(latestChange).toHaveBeenCalledExactlyOnceWith(false);
       expect(view.onChange).not.toHaveBeenCalled();

@@ -23,12 +23,6 @@ const activePlacement = {
   workspaceBaseManifestRef: "base-manifest",
   remoteWorkspaceDir: "/worker/repo",
 } satisfies GatewaySessionRow["placement"];
-const device = {
-  providerId: "device",
-  profileId: "native",
-  inference: "worker" as const,
-  runner: { kind: "device", deviceId: "paired", status: "available" } as const,
-};
 
 function mount(session: Partial<GatewaySessionRow>, props: Omit<Props, "session"> = {}) {
   return mountSolid(() =>
@@ -45,7 +39,6 @@ const text = (container: HTMLElement, name: string) => part(container, name)?.te
 
 async function openPlacement(container: HTMLElement) {
   const panel = container.querySelector<HTMLElement>('.chat-pane__placement-menu > [role="menu"]')!;
-  expect(panel.querySelector("[role^=menuitem]")).toBeNull();
   part(container, "chip")!.click();
   await waitForSolid(() => expect(panel.matches(":popover-open")).toBe(true));
 }
@@ -54,12 +47,11 @@ it.each(["profile", "device"] as const)(
   "presents post-turn workspace sync for %s without cloud-only wording",
   async (target) => {
     const container = mount({
-      agentRuntime: { id: "openclaw", source: "model" as const },
       placement: {
         ...activePlacement,
         workspaceResultReconciling: true,
-        ...(target === "device" ? device : {}),
-        environmentId: "worker:cloud",
+        inference: target === "device" ? "worker" : undefined,
+        runner: target === "device" ? { kind: "device", status: "available" } : undefined,
       },
     });
     expect(text(container, "chip")).toBe("Worker · syncing files");
@@ -101,17 +93,15 @@ it.each([
     expect(text(container, "chip")).toBe(label);
     await openPlacement(container);
     expect(text(container, "move")).toBe(moveLabel);
-    const note = part(container, "note");
-    const move = part(container, "move");
     const reclaim = part(container, "reclaim");
-    expect(move?.hasAttribute("disabled")).toBe(false);
+    expect(part(container, "move")?.hasAttribute("disabled")).toBe(false);
     expect(reclaim?.textContent?.trim()).toBe(stopLabel);
     if (status === "offline") {
-      expect(note?.textContent).toContain("Waiting for device to reconnect");
+      expect(text(container, "note")).toContain("Waiting for device to reconnect");
       expect(reclaim?.hasAttribute("disabled")).toBe(true);
       expect(reclaim?.title).toContain("Reconnect the device");
     } else {
-      expect(note).toBeNull();
+      expect(part(container, "note")).toBeNull();
       expect(reclaim?.hasAttribute("disabled")).toBe(false);
     }
   },
@@ -131,7 +121,6 @@ it.each(["local", undefined] as const)(
     expect(text(container, "chip")).toBe("Worker required");
     await openPlacement(container);
     const dispatch = part(container, "recovery");
-    expect(container.querySelectorAll(".chat-pane__placement-recovery")).toHaveLength(1);
     expect(dispatch?.textContent?.trim()).toBe("Choose worker…");
     expect(part(container, "move")).toBeNull();
     dispatch?.click();

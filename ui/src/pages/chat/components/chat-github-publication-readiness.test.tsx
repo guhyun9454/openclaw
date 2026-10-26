@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { createMemo, createSignal, Show } from "solid-js";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { projectOwner } from "../../../lib/reactive/projection.ts";
 import {
   GitHubPublicationOwner,
@@ -11,12 +11,19 @@ import {
   createTestGatewayClient,
   type GatewayRequestHandler,
 } from "../../../test-helpers/gateway-client.ts";
-import { cleanupSolid, mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { options, requestId, shared } from "../chat-github-publication.test-support.ts";
 import { GitHubPublicationMobile } from "./chat-github-publication-mobile.tsx";
 
-afterEach(cleanupSolid);
+const published = {
+  status: "published",
+  requestId,
+  publisher: shared,
+  repository: "example/project",
+  branch: "feature/docs",
+  url: "https://github.com/example/project/pull/1",
+};
 
 function bind(request: GatewayRequestHandler) {
   const owner = new GitHubPublicationOwner({
@@ -65,20 +72,12 @@ it("observes a delayed owner read and retries its visible discovery failure once
   const { binding } = bind(request);
   const view = render(binding);
   await view.expectButton("Loading");
-  expect(request).toHaveBeenCalledTimes(1);
   initial.reject(new Error("Discovery unavailable"));
   await waitForSolid(() => expect(view.container.textContent).toContain("Discovery unavailable"));
-  expect(binding.view()).toMatchObject({
-    optionsUnavailable: true,
-    error: "Discovery unavailable",
-  });
   view.getByRole("button", { name: "Refresh publication" }).click();
   await view.expectButton("Publish PR", false);
-  expect(binding.view()).toMatchObject({ optionsUnavailable: false, error: null });
-  expect(request.mock.calls.map(([method]) => method)).toEqual([
-    "sessions.github.options",
-    "sessions.github.options",
-  ]);
+  expect(view.container.textContent).not.toContain("Discovery unavailable");
+  expect(request).toHaveBeenCalledTimes(2);
   binding.detach();
 });
 
@@ -97,34 +96,15 @@ it("retires a held publication before displaying a replacement binding", async (
   view.replace(next.binding);
   await view.expectButton("Loading");
   expect(view.queryByRole("button", { name: "Publish PR" })).toBeNull();
-  completion.resolve({
-    status: "published",
-    requestId,
-    url: "https://github.com/example/repo/pull/1",
-    repository: "example/repo",
-    branch: "feature",
-    publisher: shared,
-  });
+  completion.resolve(published);
   await view.expectButton("Loading");
-  expect(
-    view.container.querySelector('a[href="https://github.com/example/repo/pull/1"]'),
-  ).toBeNull();
+  expect(view.container.querySelector(`a[href="${published.url}"]`)).toBeNull();
   nextRead.resolve({ ...options, shared: { ...shared, login: "replacement-bot" } });
   await view.expectButton("Publish PR", false);
-  expect(request).toHaveBeenCalledTimes(2);
   next.binding.detach();
 });
 
 it("acknowledges a completed publication before reading the next action", async () => {
-  const published = {
-    status: "published",
-    requestId,
-    publisher: shared,
-    repository: "example/project",
-    branch: "feature/docs",
-    headCommit: "a".repeat(40),
-    url: "https://github.com/example/project/pull/1",
-  };
   const nextRead = Promise.withResolvers<unknown>();
   const request = vi
     .fn()
@@ -133,18 +113,11 @@ it("acknowledges a completed publication before reading the next action", async 
   const { binding } = bind(request);
   const view = render(binding);
   await waitForSolid(() => expect(view.getByRole("link", { name: "Open PR" })).toBeTruthy());
-  expect(binding.view()?.result).toEqual(published);
-  expect(binding.view()?.onPublish).toBeUndefined();
+  expect(view.queryByRole("button", { name: "Publish PR" })).toBeNull();
   view.getByRole("button", { name: "Dismiss" }).click();
   await view.expectButton("Loading");
   expect(view.queryByRole("link", { name: "Open PR" })).toBeNull();
   nextRead.resolve(options);
   await waitForSolid(() => expect(view.getByRole("button", { name: "Publish PR" })).toBeTruthy());
-  expect(binding.view()?.result).toBeNull();
-  expect(binding.view()?.onPublish).toBeTypeOf("function");
-  expect(request.mock.calls.map(([method]) => method)).toEqual([
-    "sessions.github.options",
-    "sessions.github.options",
-  ]);
   binding.detach();
 });

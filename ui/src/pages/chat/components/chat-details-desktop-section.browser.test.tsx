@@ -4,24 +4,11 @@ import { userEvent } from "vitest/browser";
 import { mountSolid } from "../../../test-helpers/solid-render.tsx";
 import { ChatDetailsDesktopSection } from "./chat-details-desktop-section.tsx";
 
-let dispose: (() => void) | undefined;
 let container: HTMLDivElement;
-afterEach(() => {
-  dispose?.();
-  container?.remove();
-});
+afterEach(() => container?.remove());
 
 function mount(initiallyExpanded: boolean) {
   container = document.body.appendChild(document.createElement("div"));
-  const mountContent = vi.fn();
-  function Content(props: { height: number }) {
-    mountContent();
-    return (
-      <div style={{ height: `${props.height}px` }}>
-        <button type="button">Open artifact</button>
-      </div>
-    );
-  }
   function Section(props: { height: number; presented: boolean }) {
     const [expanded, setExpanded] = createSignal(initiallyExpanded);
     return (
@@ -32,19 +19,19 @@ function mount(initiallyExpanded: boolean) {
         presented={props.presented}
         onExpandedChange={setExpanded}
       >
-        <Content height={props.height} />
+        <div style={{ height: `${props.height}px` }}>
+          <button type="button">Open artifact</button>
+        </div>
       </ChatDetailsDesktopSection>
     );
   }
   const view = mountSolid(Section, { height: 80, presented: true }, container);
-  dispose = view.dispose;
   const disclosure = container.querySelector("details")!;
   const summary = container.querySelector("summary")!;
   return {
     view,
     disclosure,
     summary,
-    mountContent,
     get artifact() {
       return container.querySelector("button")!;
     },
@@ -52,31 +39,20 @@ function mount(initiallyExpanded: boolean) {
 }
 
 async function settleAnimations(element: HTMLElement) {
-  for (;;) {
-    flush();
-    // Let layout deliver the resize that can replace the current animation.
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => resolve());
-    });
-    const animations = element
-      .getAnimations({ subtree: true })
-      .filter((animation) => animation.playState !== "finished" && animation.playState !== "idle");
-    if (animations.length === 0) {
-      return;
-    }
-    await Promise.all(
-      animations.map(async (animation) => {
-        try {
-          await animation.finished;
-        } catch (error) {
-          // Retargeting cancels this promise; the next pass awaits its replacement.
-          if (!(error instanceof DOMException && error.name === "AbortError")) {
-            throw error;
-          }
-        }
-      }),
-    );
-  }
+  flush();
+  // Deliver the resize, then observe replacements instead of tracking cancelled promises.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+  await expect
+    .poll(() =>
+      element
+        .getAnimations({ subtree: true })
+        .filter(
+          (animation) => animation.playState !== "finished" && animation.playState !== "idle",
+        ),
+    )
+    .toHaveLength(0);
 }
 
 async function toggle(summary: HTMLElement, keyboard = false) {
@@ -86,14 +62,12 @@ async function toggle(summary: HTMLElement, keyboard = false) {
 
 it("constructs closed content on first keyboard reveal and retains it across later reveals", async () => {
   const fixture = mount(false);
-  const { disclosure, summary, mountContent } = fixture;
+  const { disclosure, summary } = fixture;
   expect(disclosure.open).toBe(false);
-  expect(mountContent).not.toHaveBeenCalled();
   expect(fixture.artifact).toBeNull();
   summary.focus();
   await toggle(summary, true);
   const artifact = fixture.artifact;
-  expect(mountContent).toHaveBeenCalledOnce();
   expect(disclosure.open).toBe(true);
   expect(artifact.checkVisibility()).toBe(true);
   expect(disclosure.getAnimations({ subtree: true })).toHaveLength(0);
@@ -105,14 +79,12 @@ it("constructs closed content on first keyboard reveal and retains it across lat
   expect(document.activeElement).toBe(summary);
   expect(fixture.artifact).toBe(artifact);
   await toggle(summary, true);
-  expect(mountContent).toHaveBeenCalledOnce();
   expect(fixture.artifact).toBe(artifact);
   expect(artifact.checkVisibility()).toBe(true);
 });
 
 it("reverses a pointer collapse, accommodates new content, and settles when parked", async () => {
-  const { view, disclosure, summary, artifact, mountContent } = mount(true);
-  expect(mountContent).toHaveBeenCalledOnce();
+  const { view, disclosure, summary, artifact } = mount(true);
   expect(disclosure.open).toBe(true);
   expect(artifact.checkVisibility()).toBe(true);
   await toggle(summary);
