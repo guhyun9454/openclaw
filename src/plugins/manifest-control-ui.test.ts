@@ -33,18 +33,24 @@ function readManifest(controlUi: unknown, uiCapabilities?: unknown, channels?: s
   return loadPluginManifest(fixture(controlUi, uiCapabilities, channels).dir);
 }
 
+function expectCapabilities(result: ReturnType<typeof loadPluginManifest>, expected?: unknown) {
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    const { uiCapabilities, controlUi } = result.manifest;
+    expect([uiCapabilities, controlUi]).toEqual([expected, undefined]);
+  }
+}
+
 it("admits channel detail presentations only for the manifest's declared channels", () => {
   const view = { section: "channels", panel: "detail", channelId: "custom" };
-  const controlUi = {
-    entry,
-    activation: "settings-only",
-    settingsViews: [...memoryViews("overview", "memories"), view],
-  };
+  const controlUi = { entry, activation: "settings-only", settingsViews: [view] };
   expect(readManifest(controlUi, undefined, ["custom"])).toMatchObject({
     ok: true,
     manifest: { controlUi },
   });
   expect(readManifest(controlUi, undefined, ["other"])).toMatchObject({ ok: false });
+  const duplicate = { ...controlUi, settingsViews: [view, view] };
+  expect(readManifest(duplicate, undefined, ["custom"])).toMatchObject({ ok: false });
 });
 
 it("carries normalized built entrypoints through discovery into runtime ownership", () => {
@@ -68,18 +74,29 @@ it("carries normalized built entrypoints through discovery into runtime ownershi
   });
 });
 
+it.each([[["overview"]], [["memories"]], [["overview", "memories"]]])(
+  "preserves settings-only presentations: %j",
+  (panels) => {
+    const controlUi = {
+      entry,
+      activation: "settings-only",
+      settingsViews: memoryViews(...panels),
+    };
+    expect(readManifest(controlUi)).toMatchObject({ ok: true, manifest: { controlUi } });
+  },
+);
+
 it.each([
   [undefined, undefined, false],
   [[], [], false],
   [["link-reader", "page", "link-reader"], ["page", "link-reader"], false],
   [null, undefined, true],
+  ["page", undefined, true],
   [["pages"], undefined, true],
+  [["page", 1], undefined, true],
 ] as const)("loads optional UI capabilities: %j", (declaration, expected, invalid) => {
   const plugin = fixture(undefined, declaration);
-  expect(loadPluginManifest(plugin.dir)).toMatchObject({
-    ok: true,
-    manifest: { uiCapabilities: expected, controlUi: undefined },
-  });
+  expectCapabilities(loadPluginManifest(plugin.dir), expected);
   if (!invalid) {
     return;
   }
@@ -107,6 +124,7 @@ it.each([
   { settingsViews: memoryViews("memories", "memories") },
   { activation: "on-startup" },
   { settingsViews: [{ section: "memory", panel: "search" }] },
+  { settingsViews: memoryViews("overview", "overview") },
   { entry: "src/index.ts" },
   { entry: "dist/index.js" },
   { entry: "../dist/control-ui/index.js" },
