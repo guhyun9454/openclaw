@@ -19,26 +19,26 @@ const setupBundleInstallFixture = createBundleInstallFixtureFactory(
 
 function setupNativePluginInstallFixture() {
   const caseDir = suiteTempRootTracker.makeTempDir();
-  const stateDir = path.join(caseDir, "state");
   const pluginDir = path.join(caseDir, "plugin-src");
-  fs.mkdirSync(path.join(pluginDir, "dist"), { recursive: true });
-  fs.writeFileSync(
-    path.join(pluginDir, "package.json"),
-    JSON.stringify({
+  const extensionsDir = path.join(caseDir, "state", "extensions");
+  const contents = {
+    "package.json": JSON.stringify({
       name: "symlink-plugin",
       version: "1.0.0",
       openclaw: { extensions: ["./dist/index.js"] },
     }),
-  );
-  fs.writeFileSync(
-    path.join(pluginDir, "openclaw.plugin.json"),
-    JSON.stringify({
+    "dist/index.js": "export {};\n",
+    "openclaw.plugin.json": JSON.stringify({
       id: "symlink-plugin",
       configSchema: { type: "object", properties: {} },
     }),
-  );
-  fs.writeFileSync(path.join(pluginDir, "dist", "index.js"), "export {};\n", "utf-8");
-  return { caseDir, pluginDir, extensionsDir: path.join(stateDir, "extensions") };
+  };
+  for (const [file, content] of Object.entries(contents)) {
+    const target = path.join(pluginDir, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
+  return { caseDir, pluginDir, path: pluginDir, extensionsDir };
 }
 
 afterAll(() => suiteTempRootTracker.cleanup());

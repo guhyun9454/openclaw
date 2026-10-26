@@ -13,20 +13,16 @@ import {
   getBoundLegacyPluginSdkResourceHost,
 } from "./legacy-sdk-resource-host.js";
 import { pluginInstanceInvocation } from "./plugin-instance-invocation.js";
-import { PluginInstance } from "./plugin-instance.js";
+import { createOwnedInstance } from "./plugin-instance.test-support.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { adoptPluginRegistryRecords } from "./registry-lifecycle.js";
 import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "./runtime/gateway-request-scope.js";
-import { createPluginRecord } from "./status.test-helpers.js";
 
 function fixture() {
-  const registry = createEmptyPluginRegistry();
-  const record = createPluginRecord({ id: "background-owner" });
-  registry.plugins.push(record);
-  const instance = new PluginInstance(record.id, { registry, record });
+  const { registry, record, instance } = createOwnedInstance("background-owner");
   const api = instrumentPluginInstanceApi(
     buildPluginApi({
       ...record,

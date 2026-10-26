@@ -1,6 +1,7 @@
 import { runInNewContext } from "node:vm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PluginInstance } from "./plugin-instance.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { PluginInstance } from "./plugin-instance.js";
+import { createTestInstance, expectUnavailable } from "./plugin-instance.test-support.js";
 
 // oxlint-disable typescript/unbound-method -- Retaining methods and supplying their receiver later is the lifecycle behavior under test.
 
@@ -37,10 +38,7 @@ function expectInstances(value: object, ...constructors: Array<new () => object>
 
 let instance: PluginInstance;
 beforeEach(() => {
-  instance = new PluginInstance("constructors");
-});
-afterEach(async () => {
-  await instance.dispose();
+  instance = createTestInstance("constructors");
 });
 
 describe("managed exported constructors", () => {
@@ -74,8 +72,7 @@ describe("managed exported constructors", () => {
     }
     const base = new WrappedBase();
     expectInstances(base, Base, WrappedBase);
-    expect(base.basePublic).toBe("base");
-    expect(base.readBase()).toBe("base private");
+    expect([base.basePublic, base.readBase()]).toEqual(["base", "base private"]);
     const derived = new Derived();
     expectInstances(derived, Derived, WrappedBase, Base);
     expect(derived.basePublic).toBe("base");
@@ -88,24 +85,20 @@ describe("managed exported constructors", () => {
     expect(derived.readDerived()).toBe("changed derived");
   });
 
-  it.each(["constructor", "method"] as const)(
-    "owns the VM function prototype %s",
-    async (member) => {
-      const Base = createBase();
-      const WrappedBase = instance.wrap(Base);
-      const Constructor: BaseConstructor = Reflect.get(WrappedBase.prototype, "constructor");
-      const method = WrappedBase.prototype.readBase;
-      const receiver = new Base();
-      expect(new Constructor().basePublic).toBe("base");
-      expect(Reflect.apply(method, receiver, [])).toBe("base private");
-      await instance.dispose();
-      if (member === "constructor") {
-        expect(() => new Constructor()).toThrow("reloaded or disabled");
-      } else {
-        expect(() => Reflect.apply(method, receiver, [])).toThrow("reloaded or disabled");
-      }
-    },
-  );
+  it("owns VM function prototype constructors and methods", async () => {
+    const Base = createBase();
+    const WrappedBase = instance.wrap(Base);
+    const Constructor: BaseConstructor = Reflect.get(WrappedBase.prototype, "constructor");
+    const method = WrappedBase.prototype.readBase;
+    const receiver = new Base();
+    expect(new Constructor().basePublic).toBe("base");
+    expect(Reflect.apply(method, receiver, [])).toBe("base private");
+    await instance.dispose();
+    expectUnavailable(
+      () => new Constructor(),
+      () => Reflect.apply(method, receiver, []),
+    );
+  });
 
   it("preserves a nested VM function prototype getter receiver", async () => {
     const Base = createBase();
