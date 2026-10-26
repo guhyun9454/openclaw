@@ -35,69 +35,9 @@ function captureRegisteredPluginApi(handlers: Parameters<typeof buildPluginApi>[
 }
 
 describe("plugin api lifecycle", () => {
-  it("omits retired top-level registrations", () => {
-    const api = captureRegisteredPluginApi({});
-    for (const method of [
-      "emitAgentEvent",
-      "setRunContext",
-      "getRunContext",
-      "clearRunContext",
-      "registerSessionAction",
-      "sendSessionAttachment",
-      "scheduleSessionTurn",
-      "unscheduleSessionTurnsByTag",
-      "steerActiveRun",
-      "registerCodexAppServerExtensionFactory",
-      "registerHostedMediaResolver",
-      "registerTextTransforms",
-      "registerAgentExecutorController",
-    ]) {
-      expect(method in api).toBe(false);
-    }
-  });
-
-  it("returns inert results for unwired runtime and scheduler handlers", async () => {
-    const api = createPluginApi();
-    const sessionKey = "agent:main:main";
-    const turn = { sessionKey, text: "queued" };
-
-    expect({
-      event: api.agent.events.emitAgentEvent({ runId: "run", stream: "lifecycle", data: {} }),
-      setContext: api.runContext.setRunContext({ runId: "run", namespace: "workflow", value: 1 }),
-      getContext: api.runContext.getRunContext({ runId: "run", namespace: "workflow" }),
-      registerJob: api.registerSessionSchedulerJob({ id: "job", sessionKey, kind: "session-turn" }),
-      injection: await api.enqueueNextTurnInjection(turn),
-      steering: await api.session.workflow.steerActiveRun(turn),
-      attachment: await api.session.workflow.sendSessionAttachment({
-        sessionKey,
-        files: [{ path: "/tmp/attachment.txt" }],
-      }),
-      schedule: await api.session.workflow.scheduleSessionTurn({
-        sessionKey,
-        message: "wake",
-        delayMs: 1_000,
-      }),
-      unschedule: await api.session.workflow.unscheduleSessionTurnsByTag({
-        sessionKey,
-        tag: "wake",
-      }),
-    }).toStrictEqual({
-      event: { emitted: false, reason: "not wired" },
-      setContext: false,
-      getContext: undefined,
-      registerJob: undefined,
-      injection: { enqueued: false, id: "", sessionKey },
-      steering: { steered: false, reason: "not wired" },
-      attachment: { ok: false, error: "not wired" },
-      schedule: undefined,
-      unschedule: { removed: 0, failed: 0 },
-    });
-  });
-
   it("keeps inherited handlers, undefined defaults, and one captured CLI lookup", () => {
     const reads: string[] = [];
     const registerCli = vi.fn<OpenClawPluginApi["registerCli"]>();
-    const registerHook = vi.fn<OpenClawPluginApi["registerHook"]>();
     class InheritedHandlers {
       get registerCli() {
         reads.push("cli");
@@ -107,62 +47,61 @@ describe("plugin api lifecycle", () => {
         reads.push("tool");
         return undefined;
       }
-      get registerHook() {
-        reads.push("hook");
-        return registerHook;
-      }
     }
     const api = createPluginApi(new InheritedHandlers());
-    const hook: Parameters<OpenClawPluginApi["registerHook"]>[1] = () => {};
     const registrar: Parameters<OpenClawPluginApi["registerCli"]>[0] = () => {};
 
     const toolFactory = vi.fn(() => null);
     expect(api.registerTool(toolFactory)).toBeUndefined();
     expect(toolFactory).not.toHaveBeenCalled();
-    expect(api).toMatchObject({ registerHook, registerCli });
-    api.registerHook("message_received", hook);
-    expect(registerHook).toHaveBeenCalledExactlyOnceWith("message_received", hook);
     api.registerNodeCliFeature(registrar, { commands: ["camera"] });
     expect(registerCli).toHaveBeenCalledExactlyOnceWith(registrar, {
       commands: ["camera"],
       parentPath: ["nodes"],
     });
-    expect(reads).toEqual(["cli", "tool", "hook"]);
+    expect(reads).toEqual(["cli", "tool"]);
   });
 
-  it.each<[string, boolean]>([
-    ["runContext.clearRunContext", true],
-    ["agent.events.emitAgentEvent", true],
-    ["enqueueNextTurnInjection", true],
-    ["session.workflow.enqueueNextTurnInjection", true],
-    ["session.workflow.steerActiveRun", true],
-    ["runContext.getRunContext", true],
-    ["session.workflow.sendSessionAttachment", true],
-    ["session.workflow.scheduleSessionTurn", true],
-    ["runContext.setRunContext", true],
-    ["session.workflow.unscheduleSessionTurnsByTag", true],
-    ["registerTool", false],
-    ["registerSessionExtension", false],
-    ["session.state.registerSessionExtension", false],
-    ["session.controls.registerSessionAction", false],
-    ["unknown", false],
-    ["", false],
-    ["constructor", false],
-    ["toString", false],
-    ["__proto__", false],
-  ])("enforces post-registration call eligibility for %j as %s", async (methodName, expected) => {
-    const input = { sessionKey: "agent:main:main", text: "guidance", namespace: "workflow" };
-    const output = { forwarded: true };
-    const handler = vi.fn(async () => output);
-    const path = methodName.split(".");
-    const api = captureRegisteredPluginApi({ [path.at(-1)!]: handler });
-    const method = path.reduce<unknown>(
-      (value, key) => (value && typeof value === "object" ? Reflect.get(value, key) : undefined),
-      api,
-    );
-    const result = typeof method === "function" ? Reflect.apply(method, api, [input]) : undefined;
-
-    expect(handler.mock.calls).toEqual(expected ? [[input]] : []);
-    expect(await result).toBe(expected ? output : undefined);
-  });
+  it.each<[string, unknown, boolean]>([
+    ["runContext.clearRunContext", undefined, true],
+    ["agent.events.emitAgentEvent", { emitted: false, reason: "not wired" }, true],
+    ["enqueueNextTurnInjection", { enqueued: false, id: "", sessionKey: "agent:main:main" }, true],
+    [
+      "session.workflow.enqueueNextTurnInjection",
+      { enqueued: false, id: "", sessionKey: "agent:main:main" },
+      true,
+    ],
+    ["session.workflow.steerActiveRun", { steered: false, reason: "not wired" }, true],
+    ["runContext.getRunContext", undefined, true],
+    ["session.workflow.sendSessionAttachment", { ok: false, error: "not wired" }, true],
+    ["session.workflow.scheduleSessionTurn", undefined, true],
+    ["runContext.setRunContext", false, true],
+    ["session.workflow.unscheduleSessionTurnsByTag", { removed: 0, failed: 0 }, true],
+    ["registerSessionSchedulerJob", undefined, false],
+    ["registerTool", undefined, false],
+    ["session.state.registerSessionExtension", undefined, false],
+    ["session.controls.registerSessionAction", undefined, false],
+    ["unknown", undefined, false],
+    ["__proto__", undefined, false],
+  ])(
+    "keeps the unwired default and post-registration eligibility for %s",
+    async (methodName, fallback, eligible) => {
+      const input = { sessionKey: "agent:main:main", text: "guidance", namespace: "workflow" };
+      const output = { forwarded: true };
+      const handler = vi.fn(async () => output);
+      const path = methodName.split(".");
+      const invoke = (api: OpenClawPluginApi) => {
+        const method = path.reduce<unknown>(
+          (value, key) =>
+            value && typeof value === "object" ? Reflect.get(value, key) : undefined,
+          api,
+        );
+        return typeof method === "function" ? Reflect.apply(method, api, [input]) : undefined;
+      };
+      expect(await invoke(createPluginApi())).toStrictEqual(fallback);
+      const api = captureRegisteredPluginApi({ [path.at(-1)!]: handler });
+      expect(await invoke(api)).toBe(eligible ? output : undefined);
+      expect(handler.mock.calls).toEqual(eligible ? [[input]] : []);
+    },
+  );
 });

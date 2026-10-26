@@ -28,13 +28,9 @@ export function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-export type ClawHubArchiveFile = {
-  path: string;
-  size: number;
-  sha256: string;
-};
+export type ClawHubArchiveFile = ReturnType<typeof clawHubArchiveFile>;
 
-export function clawHubArchiveFile(filePath: string, contents: string): ClawHubArchiveFile {
+export function clawHubArchiveFile(filePath: string, contents: string) {
   return { path: filePath, size: Buffer.byteLength(contents), sha256: sha256Hex(contents) };
 }
 
@@ -109,17 +105,9 @@ export type PackageLookupCall = Partial<
   Record<"artifact" | "baseUrl" | "name" | "version", string>
 >;
 
-export type ArchiveInstallCall = {
-  archivePath?: string;
-  expectedPluginId?: string;
-  onInstallPolicyWarning?: unknown;
-  installPolicyRequest?: {
-    kind?: string;
-    requestedSpecifier?: string;
-    source?: { kind?: string; authority?: string; mutable?: boolean; network?: boolean };
-  };
-  trustedSourceLinkedOfficialInstall?: boolean;
-};
+export type ArchiveInstallCall = Partial<
+  Parameters<typeof import("./install.js").installPluginFromArchive>[0]
+>;
 
 type InstallResult = Awaited<ReturnType<typeof import("./clawhub.js").installPluginFromClawHub>>;
 type InstallSuccess = Extract<InstallResult, { ok: true }>;
