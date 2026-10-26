@@ -103,55 +103,46 @@ function changeOnRead(filename: string, change: "ctime" | "mtime" | "bytes") {
   return () => changed !== undefined;
 }
 
-it.each(["fresh-copy", "dormant-finish", "recapture"] as const)(
-  "admits unchanged companion bytes after a first-read ctime stamp during %s (#179923)",
-  (phase) => {
-    const fixture = namespaceFixture(phase);
-    const observed = changeOnRead(fixture.observedFile, "ctime");
-    const fact = fixture.finish();
-
-    expect(observed()).toBe(true);
-    expect(fs.readFileSync(fixture.capturedFile)).toEqual(originalBytes);
-    expect(fact.members["LICENSE.md"]).toMatchObject({
-      sizeBytes: originalBytes.length,
-      contentHash: createHash("sha256").update(originalBytes).digest("hex"),
-    });
-    // Accepted read-side metadata must be recorded, or the very next reuse invalidates itself.
-    expect(pluginNativeNamespaceIsCurrent(fact, fixture.sourceDirectory)).toBe(true);
-  },
-);
-
 it.each([
+  { phase: "fresh-copy", change: "ctime" },
+  { phase: "dormant-finish", change: "ctime" },
+  { phase: "recapture", change: "ctime" },
   { phase: "fresh-copy", change: "bytes" },
   { phase: "recapture", change: "previous-bytes" },
   { phase: "fresh-copy", change: "mtime" },
   { phase: "dormant-finish", change: "mtime" },
   { phase: "recapture", change: "mtime" },
-] as const)(
-  "rejects changed companion bytes or non-ctime metadata during $phase ($change)",
-  ({ phase, change }) => {
-    const fixture = namespaceFixture(phase);
-    let observed: (() => boolean) | undefined;
-    if (change === "previous-bytes") {
-      // A real completed receipt supplies the digest; recapture must not bless edited retained bytes.
-      fs.writeFileSync(fixture.previousFile, changedBytes);
-    } else {
-      observed = changeOnRead(fixture.observedFile, change);
-    }
-
+] as const)("admits only unchanged bytes during $phase ($change, #179923)", ({ phase, change }) => {
+  const fixture = namespaceFixture(phase);
+  let observed: (() => boolean) | undefined;
+  if (change === "previous-bytes") {
+    // A completed receipt must not bless edited retained bytes.
+    fs.writeFileSync(fixture.previousFile, changedBytes);
+  } else {
+    observed = changeOnRead(fixture.observedFile, change);
+  }
+  if (change === "ctime") {
+    const fact = fixture.finish();
+    expect(fs.readFileSync(fixture.capturedFile)).toEqual(originalBytes);
+    expect(fact.members["LICENSE.md"]).toMatchObject({
+      sizeBytes: originalBytes.length,
+      contentHash: createHash("sha256").update(originalBytes).digest("hex"),
+    });
+    // Accepted metadata must be recorded, or the next reuse invalidates itself.
+    expect(pluginNativeNamespaceIsCurrent(fact, fixture.sourceDirectory)).toBe(true);
+  } else {
     expect(() => fixture.finish()).toThrow(/Native plugin (?:directory|companion) changed/);
-
-    if (observed) {
-      expect(observed()).toBe(true);
-    }
-    if (change === "bytes") {
-      // The copy retained the old read while the unmanaged source changed with size/mtime intact.
-      expect(fs.readFileSync(fixture.capturedFile)).toEqual(originalBytes);
-      expect(fs.readFileSync(fixture.sourceFile)).toEqual(changedBytes);
-      expect(fs.statSync(fixture.sourceFile, { bigint: true })).toMatchObject({
-        size: BigInt(originalBytes.length),
-        mtimeNs: BigInt(modifiedAt.getTime()) * 1_000_000n,
-      });
-    }
-  },
-);
+  }
+  if (observed) {
+    expect(observed()).toBe(true);
+  }
+  if (change === "bytes") {
+    // The copy retained the old read despite the same-size/mtime source rewrite.
+    expect(fs.readFileSync(fixture.capturedFile)).toEqual(originalBytes);
+    expect(fs.readFileSync(fixture.sourceFile)).toEqual(changedBytes);
+    expect(fs.statSync(fixture.sourceFile, { bigint: true })).toMatchObject({
+      size: BigInt(originalBytes.length),
+      mtimeNs: BigInt(modifiedAt.getTime()) * 1_000_000n,
+    });
+  }
+});
