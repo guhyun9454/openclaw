@@ -9,6 +9,18 @@ import { ChatNotice } from "./chat-divider.tsx";
 
 let container: HTMLDivElement;
 let noticeView: { update: (props: Parameters<typeof ChatNotice>[0]) => void } | undefined;
+const query = <T extends Element = HTMLElement>(selector: string) =>
+  container.querySelector<T>(selector);
+const part = (name: string) => query(`.chat-run-failure__${name}`);
+const retry = () =>
+  [...container.querySelectorAll("button")]
+    .find((b) => b.textContent?.includes("Try again"))
+    ?.click();
+async function copy(summary: string) {
+  query<HTMLButtonElement>('button[aria-label="Copy error"]')?.click();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(summary);
+}
 const failure = (summary: string) => ({
   kind: "notice" as const,
   key: "failure",
@@ -63,24 +75,18 @@ it("replaces the canonical failed run row with one line-icon notice and explicit
     throw new Error("Expected failure notice");
   }
   const onRetry = vi.fn();
-  drawNotice(item, {
-    failureActionsRunId: "run-a",
-    onRetryRun: onRetry,
-  });
+  drawNotice(item, { failureActionsRunId: "run-a", onRetryRun: onRetry });
   expect(container.querySelectorAll(".chat-run-failure")).toHaveLength(1);
   expect(container.textContent).toContain("Unable to finish this reply");
   expect(container.textContent).not.toContain("⚠");
-  expect(container.querySelector(".chat-run-failure__icon svg")).not.toBeNull();
-  expect(container.querySelector("details")).toBeNull();
+  expect(part("icon svg")).not.toBeNull();
+  expect(query("details")).toBeNull();
   expect(container.textContent).not.toContain("Change model");
-  expect(container.querySelector(".chat-run-failure__summary")?.textContent).toBe(
+  expect(part("summary")?.textContent).toBe(
     "The AI service needs a short break. Please try again in a few minutes.",
   );
-  container.querySelector<HTMLButtonElement>('button[aria-label="Copy error"]')?.click();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(writeText).toHaveBeenCalledExactlyOnceWith(summary);
-  const buttons = [...container.querySelectorAll("button")];
-  buttons.find((b) => b.textContent?.includes("Try again"))?.click();
+  await copy(summary);
+  retry();
   expect(onRetry).toHaveBeenCalledExactlyOnceWith("run-a");
   const matchingFailure = mountSolid(() =>
     renderChatComposerNotices({ messages: [message], runError: { runId: "run-a", summary } }),
@@ -99,37 +105,28 @@ it("replaces the canonical failed run row with one line-icon notice and explicit
 it("updates text and callbacks without closing expanded details", async () => {
   const onRetry = vi.fn();
   const item = failure("First failure\nFirst details");
-  drawNotice(item, {
-    failureActionsRunId: "run-a",
-    onRetryRun: onRetry,
-  });
-  const host = container.querySelector("openclaw-chat-run-failure-notice");
-  expect(container.querySelector(".chat-run-failure__summary")?.textContent).toBe("First failure");
-  container.querySelector("summary")?.click();
+  drawNotice(item, { failureActionsRunId: "run-a", onRetryRun: onRetry });
+  const host = query("openclaw-chat-run-failure-notice");
+  expect(part("summary")?.textContent).toBe("First failure");
+  query("summary")?.click();
 
   const nextRetry = vi.fn();
   const detail = `${"Long failure ".repeat(30)}\nUpdated details`;
   const summary = `⚠️ ${detail}`;
   drawNotice(
     { ...item, runError: { runId: "run-a", summary } },
-    {
-      failureActionsRunId: "run-a",
-      onRetryRun: nextRetry,
-    },
+    { failureActionsRunId: "run-a", onRetryRun: nextRetry },
   );
-  expect(container.querySelector("openclaw-chat-run-failure-notice")).toBe(host);
-  expect(container.querySelector("details")?.open).toBe(true);
-  expect(container.querySelector(".chat-run-failure__summary")?.textContent).toBe(
+  expect(query("openclaw-chat-run-failure-notice")).toBe(host);
+  expect(query<HTMLDetailsElement>("details")?.open).toBe(true);
+  expect(part("summary")?.textContent).toBe(
     "Automatic recovery has stopped. Check any completed work before trying again.",
   );
-  expect(container.querySelector("pre")?.textContent).toBe(detail);
-  const buttons = [...container.querySelectorAll("button")];
-  buttons.find((button) => button.textContent?.includes("Try again"))?.click();
+  expect(query("pre")?.textContent).toBe(detail);
+  retry();
   expect(onRetry).not.toHaveBeenCalled();
   expect(nextRetry).toHaveBeenCalledExactlyOnceWith("run-a");
-  container.querySelector<HTMLButtonElement>('button[aria-label="Copy error"]')?.click();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(writeText).toHaveBeenCalledExactlyOnceWith(summary);
+  await copy(summary);
 });
 
 it.each([
@@ -143,7 +140,7 @@ it.each([
   expect(container.querySelectorAll(".chat-run-failure__header button")).toHaveLength(2);
   drawNotice(item, { ...recovery, ...actions });
   expect(container.querySelectorAll(".chat-run-failure__header button")).toHaveLength(1);
-  expect(container.querySelector('button[aria-label="Copy error"]')).not.toBeNull();
+  expect(query('button[aria-label="Copy error"]')).not.toBeNull();
 });
 
 it("keeps ordinary assistant warning text as authored content", () => {
@@ -159,16 +156,12 @@ it("shows a repeat count only for repeated failures and keeps the latest retry a
   const item = { ...failure("Rate-limit recovery stopped"), repeatCount: 3 };
   const onRetry = vi.fn();
   drawNotice(item, { failureActionsRunId: "run-a", onRetryRun: onRetry });
-  expect(container.querySelector(".chat-run-failure__repeat")?.textContent).toBe("· 3 times");
-  container.querySelector<HTMLButtonElement>('button[aria-label="Copy error"]')?.click();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(writeText).toHaveBeenCalledExactlyOnceWith(item.runError.summary);
-  [...container.querySelectorAll("button")]
-    .find((button) => button.textContent?.includes("Try again"))
-    ?.click();
+  expect(part("repeat")?.textContent).toBe("· 3 times");
+  await copy(item.runError.summary);
+  retry();
   expect(onRetry).toHaveBeenCalledExactlyOnceWith("run-a");
   for (const repeatCount of [1, undefined]) {
     drawNotice({ ...item, repeatCount });
-    expect(container.querySelector(".chat-run-failure__repeat")).toBeNull();
+    expect(part("repeat")).toBeNull();
   }
 });

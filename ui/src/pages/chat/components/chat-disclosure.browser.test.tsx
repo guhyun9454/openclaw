@@ -13,6 +13,7 @@ import { WorkGroupSummary } from "./chat-work-group-summary.tsx";
 const browserMode = "__vitest_browser__" in globalThis;
 let userEvent: (typeof import("vitest/browser"))["userEvent"];
 let container: HTMLDivElement;
+const tool = { id: "search", name: "web_search", arguments: { query: "disclosures" } };
 beforeAll(async () => {
   if (browserMode) {
     ({ userEvent } = await import("vitest/browser"));
@@ -49,21 +50,14 @@ describe.runIf(browserMode)("chat disclosure activation", () => {
       const groups = [
         group("activity", {
           role: "assistant",
-          content: [
-            {
-              type: "toolCall",
-              id: "search",
-              name: "web_search",
-              arguments: { query: "disclosures" },
-            },
-          ],
+          content: [{ type: "toolCall", ...tool }],
           activity: [
             {
-              itemId: "search",
-              toolCallId: "search",
+              itemId: tool.id,
+              toolCallId: tool.id,
               kind: "tool",
               phase: "end",
-              name: "web_search",
+              name: tool.name,
               title: "Search",
               status: "completed",
             },
@@ -99,12 +93,7 @@ describe.runIf(browserMode)("chat disclosure activation", () => {
               <ActivityGroup groups={groups} options={options()} presentation="standalone" />
             ) : kind === "tool" ? (
               <ChatToolCard
-                card={{
-                  id: "search",
-                  name: "web_search",
-                  args: { query: "disclosures" },
-                  completed: true,
-                }}
+                card={{ id: tool.id, name: tool.name, args: tool.arguments, completed: true }}
                 options={{ messageKey: "tool", expanded: props.expanded, onToggleExpanded: toggle }}
               />
             ) : kind === "tool-output" ? (

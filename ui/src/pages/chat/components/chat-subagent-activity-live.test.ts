@@ -65,9 +65,11 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
     disposeSidebarContextLifecycles();
   });
   flush();
-  const publish = (event: string, payload: unknown) => {
+  const publish = (event: string, payload: unknown, settle = true) => {
     connection.publishEvent({ type: "event", event, payload });
-    flush();
+    if (settle) {
+      flush();
+    }
   };
   const narrate = (text: string, runId = "child-run") =>
     publish("session.narration", { sessionKey: child.key, runId, text });
@@ -82,8 +84,8 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
     headline: "Verifying the API response",
     health: "on-track",
   };
-  const emit = async (patch: Partial<SessionObserverDigest> = {}) =>
-    publish("session.observer", { ...digest, ...patch });
+  const emit = (patch: Partial<SessionObserverDigest> = {}, settle = true) =>
+    publish("session.observer", { ...digest, ...patch }, settle);
   expect(subscribe).not.toHaveBeenCalled();
   expect(unsubscribe).not.toHaveBeenCalled();
   narrate("Reading sources. **Checking the API response.**");
@@ -130,21 +132,16 @@ it("keeps live child headlines scoped to their run, incarnation, and connection"
   expect(element.textContent).not.toContain(digest.headline);
   await emit({ revision: 11 });
   expect(element.textContent).toContain(digest.headline);
-  connection.publishEvent({
-    type: "event",
-    event: "session.observer",
-    payload: {
-      ...digest,
+  // Queue both revisions before flushing to preserve the ordering regression.
+  emit(
+    {
       revision: 13,
       headline: "Finishing verification",
       planProgress: { completed: 2, total: 3 },
     },
-  });
-  connection.publishEvent({
-    type: "event",
-    event: "session.observer",
-    payload: { ...digest, revision: 12, headline: "Superseded verification" },
-  });
+    false,
+  );
+  emit({ revision: 12, headline: "Superseded verification" }, false);
   flush();
   expect(element.textContent).toContain("Finishing verification");
   expect(element.textContent).not.toContain("Superseded verification");

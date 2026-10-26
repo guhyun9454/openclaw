@@ -38,11 +38,14 @@ function mountMenu() {
       </>
     );
   });
-  const trigger = view.container.querySelector<HTMLButtonElement>(
-    ".agent-chat__input-btn--attach",
-  )!;
+  const triggerSelector = ".agent-chat__input-btn--attach";
+  const trigger = view.container.querySelector<HTMLButtonElement>(triggerSelector)!;
   const panel = view.container.querySelector(".agent-chat__capability-menu-panel")!;
-  return { ...view, setMenu, trigger, panel, onChange };
+  const item = (name: string) => view.getByRole("menuitemcheckbox", { name, hidden: true });
+  const expectOpen = (open = true) =>
+    waitForSolid(() => expect(panel.matches(":popover-open")).toBe(open));
+  const expectTrigger = () => expect(view.container.querySelector(triggerSelector)).toBe(trigger);
+  return { ...view, setMenu, trigger, panel, onChange, item, expectOpen, expectTrigger };
 }
 
 it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as const)(
@@ -80,10 +83,8 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
     }
     // Cold module work precedes Solid's DOM settlement window.
     await entered.promise;
-    await waitForSolid(() => {
-      expect(view.panel.matches(":popover-open")).toBe(true);
-      expect(loads).toBe(1);
-    });
+    await view.expectOpen();
+    expect(loads).toBe(1);
     expect(
       view.getByRole("menuitem", { name: "Loading…", hidden: true }).hasAttribute("disabled"),
     ).toBe(true);
@@ -106,20 +107,16 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
       external.focus();
     } else if (mode === "closed" || mode === "reopened") {
       view.setMenu((current) => ({ ...current, open: false }));
-      await waitForSolid(() => expect(view.panel.matches(":popover-open")).toBe(false));
+      await view.expectOpen(false);
       if (mode === "reopened") {
         view.trigger.click();
-        await waitForSolid(() => expect(view.panel.matches(":popover-open")).toBe(true));
+        await view.expectOpen();
       }
     }
     ready.resolve();
     await imported.promise;
-    await waitForSolid(() =>
-      expect(
-        view.getByRole("menuitemcheckbox", { name: "Updated toggle", hidden: true }),
-      ).toBeTruthy(),
-    );
-    expect(view.container.querySelector(".agent-chat__input-btn--attach")).toBe(view.trigger);
+    await waitForSolid(() => expect(view.item("Updated toggle")).toBeTruthy());
+    view.expectTrigger();
     expect(loads).toBe(1);
     if (mode === "closed") {
       expect(view.panel.matches(":popover-open")).toBe(false);
@@ -131,7 +128,7 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
       await waitForSolid(() =>
         expect(document.activeElement).toBe(
           mode === "last"
-            ? view.getByRole("menuitemcheckbox", { name: "Updated toggle", hidden: true })
+            ? view.item("Updated toggle")
             : view.getByRole("menuitem", { name: "Take photo", hidden: true }),
         ),
       );
@@ -139,13 +136,9 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
         document.activeElement!.dispatchEvent(
           new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }),
         );
-        await waitForSolid(() =>
-          expect(document.activeElement).toBe(
-            view.getByRole("menuitemcheckbox", { name: "Updated toggle", hidden: true }),
-          ),
-        );
+        await waitForSolid(() => expect(document.activeElement).toBe(view.item("Updated toggle")));
       }
-      view.getByRole("menuitemcheckbox", { name: "Updated toggle", hidden: true }).click();
+      view.item("Updated toggle").click();
       expect(latestChange).toHaveBeenCalledExactlyOnceWith(false);
       expect(view.onChange).not.toHaveBeenCalled();
     }
@@ -164,11 +157,7 @@ it("keeps the menu open and retries a failed content load", async () => {
   expect(view.getByRole("alert").textContent).toContain("Menu chunk could not be loaded");
   vi.doUnmock("./chat-composer-plus-menu-content.tsx");
   view.getByRole("button", { name: "Retry" }).click();
-  await waitForSolid(() =>
-    expect(
-      view.getByRole("menuitemcheckbox", { name: "Original toggle", hidden: true }),
-    ).toBeTruthy(),
-  );
-  expect(view.container.querySelector(".agent-chat__input-btn--attach")).toBe(view.trigger);
+  await waitForSolid(() => expect(view.item("Original toggle")).toBeTruthy());
+  view.expectTrigger();
   expect(view.panel.matches(":popover-open")).toBe(true);
 });

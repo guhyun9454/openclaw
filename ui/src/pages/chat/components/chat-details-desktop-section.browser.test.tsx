@@ -79,6 +79,11 @@ async function settleAnimations(element: HTMLElement) {
   }
 }
 
+async function toggle(summary: HTMLElement, keyboard = false) {
+  await (keyboard ? userEvent.keyboard("{Enter}") : userEvent.click(summary));
+  flush();
+}
+
 it("constructs closed content on first keyboard reveal and retains it across later reveals", async () => {
   const fixture = mount(false);
   const { disclosure, summary, mountContent } = fixture;
@@ -86,8 +91,7 @@ it("constructs closed content on first keyboard reveal and retains it across lat
   expect(mountContent).not.toHaveBeenCalled();
   expect(fixture.artifact).toBeNull();
   summary.focus();
-  await userEvent.keyboard("{Enter}");
-  flush();
+  await toggle(summary, true);
   const artifact = fixture.artifact;
   expect(mountContent).toHaveBeenCalledOnce();
   expect(disclosure.open).toBe(true);
@@ -96,13 +100,11 @@ it("constructs closed content on first keyboard reveal and retains it across lat
   await userEvent.tab();
   expect(document.activeElement).toBe(artifact);
   summary.focus();
-  await userEvent.keyboard("{Enter}");
-  flush();
+  await toggle(summary, true);
   expect(disclosure.open).toBe(false);
   expect(document.activeElement).toBe(summary);
   expect(fixture.artifact).toBe(artifact);
-  await userEvent.keyboard("{Enter}");
-  flush();
+  await toggle(summary, true);
   expect(mountContent).toHaveBeenCalledOnce();
   expect(fixture.artifact).toBe(artifact);
   expect(artifact.checkVisibility()).toBe(true);
@@ -113,20 +115,17 @@ it("reverses a pointer collapse, accommodates new content, and settles when park
   expect(mountContent).toHaveBeenCalledOnce();
   expect(disclosure.open).toBe(true);
   expect(artifact.checkVisibility()).toBe(true);
-  await userEvent.click(summary);
-  flush();
+  await toggle(summary);
   expect(summary.getAttribute("aria-expanded")).toBe("false");
   expect(artifact.closest("[inert]")).not.toBeNull();
-  await userEvent.click(summary);
-  flush();
+  await toggle(summary);
   view.update({ height: 160, presented: true });
   await settleAnimations(disclosure);
   expect(disclosure.open).toBe(true);
   expect(artifact.closest("[inert]")).toBeNull();
   // The body is not stuck at the old height when its real content grows.
   expect(disclosure.getBoundingClientRect().height).toBeGreaterThan(160);
-  await userEvent.click(summary);
-  flush();
+  await toggle(summary);
   view.update({ height: 160, presented: false });
   expect(disclosure.open).toBe(false);
   expect(disclosure.getAnimations({ subtree: true })).toHaveLength(0);
@@ -142,11 +141,8 @@ it("opens from the collapsed height and reverses from the visible height", async
     animation.pause();
     return animation;
   });
-  onTestFinished(() => {
-    animationSpy.mockRestore();
-  });
-  await userEvent.click(summary);
-  flush();
+  onTestFinished(() => animationSpy.mockRestore());
+  await toggle(summary);
   const opening = body.getAnimations()[0]!;
   opening.currentTime = 0;
   expect(body.getBoundingClientRect().height).toBe(0);
@@ -155,8 +151,7 @@ it("opens from the collapsed height and reverses from the visible height", async
   expect(visibleHeight).toBeGreaterThan(0);
   expect(visibleHeight).toBeLessThan(80);
 
-  await userEvent.click(summary);
-  flush();
+  await toggle(summary);
   const closing = body.getAnimations()[0]!;
   closing.currentTime = 0;
   expect(body.getBoundingClientRect().height).toBeCloseTo(visibleHeight, 0);
