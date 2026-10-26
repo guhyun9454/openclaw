@@ -9,6 +9,7 @@ import {
   seal,
   generateIdentity,
   type GuardAdapter,
+  type SignedReceipt,
   type ReplayStore,
   type Verdict,
 } from "../protocol/index.js";
@@ -43,7 +44,10 @@ export function flowStores(deliveredMaxEntries?: number, reviewsMaxEntries?: num
     runtime,
     stateDir,
     reviews: new ReviewApprovalStore(runtime, reviewsMaxEntries),
-    delivered: new ReefDeliveredStore(runtime, deliveredMaxEntries),
+    delivered:
+      deliveredMaxEntries === undefined
+        ? new ReefDeliveredStore(runtime)
+        : new ReefDeliveredStore(runtime, deliveredMaxEntries),
   };
 }
 
@@ -163,13 +167,15 @@ export function peerTrust(
 
 export function transport() {
   return {
-    acknowledge: vi
-      .fn<ReefTransportClient["acknowledge"]>()
-      .mockResolvedValue({ result: "deleted" }),
-    sendEnvelope: vi.fn<ReefTransportClient["sendEnvelope"]>(async (_peer, value) => ({
-      id: value.id,
-      status: "queued",
+    acknowledge: vi.fn(async (_peer: string, _id: string, _receipt: SignedReceipt) => ({
+      result: "deleted",
     })),
+    sendEnvelope: vi.fn(
+      async (_peer: string, value: Parameters<ReefTransportClient["sendEnvelope"]>[1]) => ({
+        id: value.id,
+        status: "queued",
+      }),
+    ),
   };
 }
 

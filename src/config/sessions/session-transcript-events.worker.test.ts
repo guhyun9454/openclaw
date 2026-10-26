@@ -1,22 +1,32 @@
 import fs from "node:fs/promises";
 import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { SqliteJsonlReadBudgetExceededError } from "../../infra/sqlite-jsonl-budget-error.js";
-import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { loadTranscriptEvents } from "./session-accessor.js";
-import { withoutHostSql } from "./session-accessor.observation.test-support.js";
 import { appendTranscriptEvent } from "./session-accessor.sqlite-transcript-write.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
-import {
-  transcriptScope,
-  withTranscriptDatabase,
-} from "./session-transcript-fixture.test-support.js";
+import { transcriptScope } from "./session-transcript-fixture.test-support.js";
 import * as targetWorker from "./session-transcript-read-worker-runtime.js";
 
 function message(id: string, parentId: string | null, role: string, content: string) {
   return { type: "message", id, parentId, message: { role, content } };
 }
+async function withoutHostSql(run: () => Promise<void>) {
+  const sql = observeHostDataSql();
+  try {
+    await run();
+    expect(sql.queries).toEqual([]);
+  } finally {
+    sql.restore();
+  }
+}
+
 const events = [
   { type: "session", id: "raw-events", version: 3 },
   message("question", null, "user", "雪🦞"),
@@ -56,7 +66,8 @@ it("appends entry-less raw events off-thread and resolves parents from current w
   }));
 
 it("reads all ordered raw events and byte bounds without caller SQL, including cold target discovery", () =>
-  withTranscriptDatabase("raw-events", async ({ scope, state }) => {
+  withOpenClawTestState({ label: "transcript-events-worker" }, async (state) => {
+    const scope = transcriptScope(state.env, "raw-events", state.statePath("transcript.sqlite"));
     await replaceTranscriptEvents(scope, events);
     await closeOpenClawAgentDatabaseByPathAsync(scope.storePath);
     const maxEventBytes = Buffer.byteLength(
@@ -77,8 +88,14 @@ it("reads all ordered raw events and byte bounds without caller SQL, including c
   }));
 
 it("preserves SyntaxError across the worker boundary and releases the failed read", () =>
-  withTranscriptDatabase("raw-events", async ({ scope, database }) => {
+  withOpenClawTestState({ label: "transcript-events-malformed" }, async (state) => {
+    const scope = transcriptScope(state.env, "raw-events", state.statePath("transcript.sqlite"));
     await replaceTranscriptEvents(scope, events);
+    const database = openOpenClawAgentDatabase({
+      agentId: scope.agentId,
+      env: scope.env,
+      path: scope.storePath,
+    });
     const update = database.db.prepare(
       "UPDATE transcript_events SET event_json = ? WHERE session_id = ? AND seq = 1",
     );
@@ -93,8 +110,12 @@ it("preserves SyntaxError across the worker boundary and releases the failed rea
 it.each(["scope", "physical store"] as const)(
   "captures the %s before target discovery yields",
   (change) =>
-    withTranscriptDatabase("raw-events", async ({ scope, state }) => {
-      scope.env = { ...scope.env };
+    withOpenClawTestState({ label: "transcript-events-source" }, async (state) => {
+      const scope = transcriptScope(
+        { ...state.env },
+        "raw-events",
+        state.statePath("transcript.sqlite"),
+      );
       await replaceTranscriptEvents(scope, events);
       await closeOpenClawAgentDatabaseByPathAsync(scope.storePath);
       const held = createDeferred();

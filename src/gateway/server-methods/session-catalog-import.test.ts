@@ -110,11 +110,13 @@ it.each(["completed", "failed"] as const)("handles %s post-commit import", async
   }
 });
 
-it.each(["source", "custody", "creation"] as const)(
+it.each(["destination", "source", "custody", "creation"] as const)(
   "does not preserve or record an import after %s refusal",
   async (stage) => {
     const subject = fixture();
-    if (stage === "source") {
+    if (stage === "destination") {
+      mocks.authorize.mockResolvedValue({ error: denied });
+    } else if (stage === "source") {
       subject.reauthorize.mockResolvedValue(null);
     } else if (stage === "creation") {
       mocks.create.mockResolvedValue({ ok: false, error: denied });
@@ -143,21 +145,29 @@ it.each(["source", "custody", "creation"] as const)(
   },
 );
 
-it("rechecks destination authority at the creation commit boundary", async () => {
-  mocks.authorize.mockResolvedValue({
-    error: null,
-    authorization: {
-      assertCurrent: () => {
-        throw new Error("Destination authority revoked");
+it.each([
+  ["source", "Session catalog source visibility changed"],
+  ["destination", "Destination authority revoked"],
+] as const)("rechecks %s authority at the creation commit boundary", async (authority, error) => {
+  if (authority === "destination") {
+    mocks.authorize.mockResolvedValue({
+      error: null,
+      authorization: {
+        assertCurrent: () => {
+          throw new Error("Destination authority revoked");
+        },
+        assertTargetCurrent: vi.fn(),
       },
-      assertTargetCurrent: vi.fn(),
-    },
-  });
+    });
+  }
   mocks.create.mockImplementation(async ({ commitGuard }) => {
+    if (authority === "source") {
+      mocks.visibility.mockReturnValue({ kind: "unrestricted", cacheKey: "replacement-grant" });
+    }
     commitGuard?.();
     throw new Error("Revoked authority reached creation");
   });
-  await expect(fixture().run()).rejects.toThrow("Destination authority revoked");
+  await expect(fixture().run()).rejects.toThrow(error);
   expect(mocks.preserve).not.toHaveBeenCalled();
   expect(mocks.record).not.toHaveBeenCalled();
 });

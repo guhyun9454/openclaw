@@ -2,9 +2,9 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, test } from "vitest";
 import type { WebSocket } from "ws";
 import { resolveCronDeliveryPlan } from "../cron/delivery-plan.js";
-import { makeCronJob } from "../cron/delivery.test-helpers.js";
+import type { DispatchCronDeliveryParams } from "../cron/isolated-agent/delivery-dispatch-types.js";
 import { dispatchCronDelivery } from "../cron/isolated-agent/delivery-dispatch.js";
-import { makeBaseParams } from "../cron/isolated-agent/delivery-dispatch.test-fixtures.js";
+import type { CronStoredJob } from "../cron/types.js";
 import {
   type createGatewaySuiteHarness,
   type onceMessage,
@@ -35,93 +35,139 @@ export function registerCronSessionCompletionEventTests({
   test.each(["current", "isolated"] as const)(
     "publishes a %s completion live and restores it once from WebChat history after retry",
     async (sessionTarget) => {
-      using sockets = new DisposableStack();
       const harness = getHarness();
       const storePath = await createSessionStoreFile();
       const sessionId = "sess-current-cron-completion";
       const sessionKey = "agent:main:webchat:direct:cron-owner";
-      const generation = { sessionId, lifecycleRevision: "current-cron-revision" };
-      const text = "The detached cron finished without another user message.";
       await writeSessionStore({
         entries: {
           "webchat:direct:cron-owner": {
-            ...generation,
+            sessionId,
+            lifecycleRevision: "current-cron-revision",
             updatedAt: Date.now(),
           },
         },
         storePath,
       });
 
-      const connect = async () => {
-        const ws = await harness.openWs({ origin: `http://127.0.0.1:${harness.port}` });
-        sockets.defer(() => ws.close());
-        await connectSessionClient(ws, storePath, "current-cron-web-device", "web");
-        return ws;
-      };
-      const webWs = await connect();
-      await rpcReq(webWs, "sessions.messages.subscribe", { key: sessionKey });
+      const webWs = await harness.openWs({ origin: `http://127.0.0.1:${harness.port}` });
+      let reconnectedWebWs: Awaited<ReturnType<typeof harness.openWs>> | undefined;
+      try {
+        await connectSessionClient(webWs, storePath, "current-cron-web-device", "web");
+        await rpcReq(webWs, "sessions.messages.subscribe", { key: sessionKey });
 
-      const job = makeCronJob({
-        id: "job-webchat",
-        sessionTarget,
-        sessionKey,
-        sourceConversation:
-          sessionTarget === "isolated" ? { sessionKey, ...generation } : undefined,
-        delivery: { mode: "announce", channel: "last" },
-      });
-      const liveEventPromise = waitForSessionMessageEvent(webWs, sessionKey);
-      const deliveryParams = {
-        ...makeBaseParams({ synthesizedText: text, runStartedAt: 3_000 }),
-        cfgWithAgentDefaults: { session: { store: storePath } },
-        job,
-        sourceSessionKey: sessionKey,
-        sourceSessionGeneration: generation,
-        resolvedDelivery: {
-          ok: false as const,
-          channel: "webchat",
-          mode: "implicit" as const,
-          error: new Error("WebChat uses canonical session events"),
-        },
-        deliveryPlan: resolveCronDeliveryPlan(job),
-      };
-      const dispatched = await dispatchCronDelivery(deliveryParams);
-      expect(dispatched).toMatchObject({ delivered: true, deliveryAttempted: true });
-
-      const liveEvent = await liveEventPromise;
-      const livePayload = requireRecord(liveEvent.payload, "background completion event");
-      const completionMessage = {
-        __openclaw: {
-          idempotencyKey: "cron-current-completion:cron:job-webchat:3000",
-        },
-        content: [{ type: "text", text }],
-        openclawAutomation: {
-          kind: "cron",
-          jobId: "job-webchat",
-          runId: "cron:job-webchat:3000",
-        },
-        role: "assistant",
-      };
-      expect(livePayload.message).toMatchObject(completionMessage);
-      await expect(dispatchCronDelivery(deliveryParams)).resolves.toMatchObject({
-        delivered: true,
-      });
-
-      webWs.close();
-      const reconnectedWebWs = await connect();
-      const history = await rpcReq<{ messages?: unknown[] }>(reconnectedWebWs, "chat.history", {
-        sessionKey,
-      });
-      expect(history.ok).toBe(true);
-      expect(history.payload?.messages).toMatchObject([
-        {
-          ...completionMessage,
-          __openclaw: {
-            id: livePayload.messageId,
-            idempotencyKey: "cron-current-completion:cron:job-webchat:3000",
-            seq: 1,
+        const job: CronStoredJob = {
+          id: "job-webchat",
+          name: "Current WebChat completion",
+          sessionTarget,
+          sessionKey,
+          ...(sessionTarget === "isolated"
+            ? {
+                sourceConversation: {
+                  sessionKey,
+                  sessionId,
+                  lifecycleRevision: "current-cron-revision",
+                },
+              }
+            : {}),
+          delivery: { mode: "announce", channel: "last" },
+          wakeMode: "now",
+          enabled: true,
+          state: {},
+          createdAtMs: 1,
+          updatedAtMs: 1,
+          schedule: { kind: "at", at: "2030-01-01T00:00:00.000Z" },
+          payload: { kind: "agentTurn", message: "Finish later" },
+        };
+        const liveEventPromise = waitForSessionMessageEvent(webWs, sessionKey);
+        const deliveryParams: DispatchCronDeliveryParams = {
+          cfgWithAgentDefaults: { session: { store: storePath } },
+          deps: {},
+          job,
+          deliveryAttemptFence: null,
+          agentId: "main",
+          agentSessionKey: "cron:job-webchat",
+          sourceSessionKey: sessionKey,
+          sourceSessionGeneration: {
+            sessionId,
+            lifecycleRevision: "current-cron-revision",
           },
-        },
-      ]);
+          runSessionKey: "cron:job-webchat:run:3000",
+          sessionId: "detached-cron-session",
+          lifecycleRevision: "detached-cron-revision",
+          sessionUpdatedAt: 3_000,
+          runStartedAt: 3_000,
+          timeoutMs: 30_000,
+          resolvedDelivery: {
+            ok: false,
+            channel: "webchat",
+            mode: "implicit",
+            error: new Error("WebChat uses canonical session events"),
+          },
+          deliveryPlan: resolveCronDeliveryPlan(job),
+          deliveryRequested: true,
+          undeliveredRunStatus: "ok",
+          spawnOnlyHandoff: false,
+          sourceDeliveryOutcome: {
+            visibleDeliveries: [],
+            verifiedMessageToolDelivery: false,
+            satisfiesSourceDelivery: false,
+            unverifiedMessageToolDelivery: false,
+          },
+          deliveryBestEffort: false,
+          deliveryPayloads: [{ text: "The detached cron finished without another user message." }],
+          synthesizedText: "The detached cron finished without another user message.",
+          summary: "The detached cron finished without another user message.",
+          outputText: "The detached cron finished without another user message.",
+          isAborted: () => false,
+          abortReason: () => "aborted",
+        };
+        const dispatched = await dispatchCronDelivery(deliveryParams);
+        expect(dispatched).toMatchObject({ delivered: true, deliveryAttempted: true });
+
+        const liveEvent = await liveEventPromise;
+        const livePayload = requireRecord(liveEvent.payload, "background completion event");
+        const completionMessage = {
+          __openclaw: {
+            idempotencyKey: "cron-current-completion:cron:job-webchat:3000",
+          },
+          content: [
+            { type: "text", text: "The detached cron finished without another user message." },
+          ],
+          openclawAutomation: {
+            kind: "cron",
+            jobId: "job-webchat",
+            runId: "cron:job-webchat:3000",
+          },
+          role: "assistant",
+        };
+        expect(livePayload.message).toMatchObject(completionMessage);
+        await expect(dispatchCronDelivery(deliveryParams)).resolves.toMatchObject({
+          delivered: true,
+        });
+
+        webWs.close();
+        reconnectedWebWs = await harness.openWs({ origin: `http://127.0.0.1:${harness.port}` });
+        await connectSessionClient(reconnectedWebWs, storePath, "current-cron-web-device", "web");
+        const history = await rpcReq<{ messages?: unknown[] }>(reconnectedWebWs, "chat.history", {
+          sessionKey,
+        });
+        expect(history.ok).toBe(true);
+        expect(history.payload?.messages).toHaveLength(1);
+        expect(history.payload?.messages).toContainEqual(
+          expect.objectContaining({
+            ...completionMessage,
+            __openclaw: expect.objectContaining({
+              id: livePayload.messageId,
+              idempotencyKey: "cron-current-completion:cron:job-webchat:3000",
+              seq: 1,
+            }),
+          }),
+        );
+      } finally {
+        webWs.close();
+        reconnectedWebWs?.close();
+      }
     },
   );
 }

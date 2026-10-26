@@ -38,7 +38,9 @@ function nodeFixture(nodeId: string, overrides: Partial<NodeEventContext> = {}) 
 
 it("holds an exec notice before target capture can settle its inline invocation", async () => {
   const registry = new NodeRegistry();
-  onTestFinished(() => registry.unregister("inline-conn"));
+  onTestFinished(() => {
+    registry.unregister("inline-conn");
+  });
   const frames: string[] = [];
   registerNodeSession(
     registry,
