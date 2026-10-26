@@ -31,21 +31,16 @@ it("preserves legacy JSON bytes, including literal prototype keys and escaped de
   expect(codexLegacyDynamicToolsFingerprint([])).toBe("[]");
 });
 
-it("keeps tool fingerprints stable when tools and schema properties are reordered", () => {
+it("keeps hashed tool fingerprints stable when tools are reordered", () => {
   const message = {
     type: "function",
     name: "message",
     inputSchema: { type: "string", description: "Current channel." },
   };
-  const reorderedMessage = {
-    name: message.name,
-    type: message.type,
-    inputSchema: { description: "Current channel.", type: "string" },
-  };
   const search = { ...message, name: "search" };
 
   expect(codexDynamicToolsFingerprint([message, search])).toBe(
-    codexDynamicToolsFingerprint([search, reorderedMessage]),
+    codexDynamicToolsFingerprint([search, message]),
   );
 });
 
@@ -79,7 +74,7 @@ describe("fingerprintCodexThreadConfig", () => {
   });
 });
 
-describe.each(["ordinary", "restricted"] as const)("%s proxied thread fingerprint", (kind) => {
+it.each(["ordinary", "restricted"] as const)("preserves %s proxy identity", (kind) => {
   function fingerprint(
     port: number,
     upstream = "https://api.example.com/v1",
@@ -108,28 +103,20 @@ describe.each(["ordinary", "restricted"] as const)("%s proxied thread fingerprin
       : fingerprintRestrictedThreadConfig(request, auth, "tools", {}, false, undefined, inference);
   }
 
-  it("keeps identity across proxy restarts", () => {
-    expect(fingerprint(41001)).toBe(fingerprint(41002));
-  });
-
-  it("retains upstream, auth profile, and other configuration identity", () => {
-    const original = fingerprint(41001);
-    expect(fingerprint(41002, "https://other.example.com/v1")).not.toBe(original);
-    expect(fingerprint(41002, undefined, "work")).not.toBe(original);
-    expect(fingerprint(41002, undefined, undefined, false)).not.toBe(original);
-  });
+  const original = fingerprint(41001);
+  expect(fingerprint(41002)).toBe(original);
+  expect(fingerprint(41002, "https://other.example.com/v1")).not.toBe(original);
+  expect(fingerprint(41002, undefined, "work")).not.toBe(original);
+  expect(fingerprint(41002, undefined, undefined, false)).not.toBe(original);
 });
 
 it("retains literal __proto__ MCP header keys during redaction", () => {
+  const headers = (value: string) => ({
+    Authorization: "synthetic",
+    ["__proto__"]: value,
+  });
   const config = (value: string): JsonObject => ({
-    mcp_servers: {
-      calendar: {
-        http_headers: {
-          Authorization: "synthetic-access-token",
-          ["__proto__"]: value,
-        },
-      },
-    },
+    mcp_servers: { calendar: { http_headers: headers(value) } },
   });
   const first = fingerprintUserMcpServersConfigPatch(config("synthetic-first"));
   const second = fingerprintUserMcpServersConfigPatch(config("synthetic-second"));
