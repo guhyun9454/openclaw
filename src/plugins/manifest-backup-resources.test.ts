@@ -62,7 +62,7 @@ function createPluginFixture(
 }
 
 describe("plugin manifest backup resources", () => {
-  it.each([
+  const invalidPaths = [
     ["an absolute POSIX path", "/outside"],
     ["a Windows drive-relative path", "C:outside"],
     ["a backslash separator", "owner\\cache"],
@@ -71,16 +71,9 @@ describe("plugin manifest backup resources", () => {
     ["an empty segment", "owner//cache"],
     ["a current-directory segment", "owner/./cache"],
     ["a parent-directory segment", "owner/../outside"],
-  ])("rejects %s", (_label, relativePath) => {
-    const fixture = createPluginFixture([resource({ relativePath })]);
-
-    expect(loadPluginManifest(fixture.pluginRoot)).toMatchObject({
-      ok: false,
-      error: expect.stringContaining("strict relative POSIX path"),
-    });
-  });
-
+  ].map(([label, relativePath]) => [label, [resource({ relativePath })], true] as const);
   it.each([
+    ...invalidPaths,
     ["non-array declarations", {}],
     ["unknown disposition", [resource({ disposition: "exclude" })]],
     ["unknown scope", [resource({ scope: "workspace" })]],
@@ -89,13 +82,14 @@ describe("plugin manifest backup resources", () => {
     ["unsupported database family", [resource({ databaseFamily: "unknown" })]],
     ["regenerable database", [resource({ disposition: "regenerable", databaseFamily: "state" })]],
     ["agent-scoped database", [resource({ scope: "agent", databaseFamily: "state" })]],
-  ])("rejects %s", (_label, backupResources) => {
+  ])("rejects %s", (_label, backupResources, invalidPath) => {
     const fixture = createPluginFixture(backupResources);
-
     expect(loadPluginManifest(fixture.pluginRoot)).toMatchObject({
       ok: false,
-      error: expect.stringContaining("backupResources"),
-      diagnosticCode: "backup-resource-declaration-invalid",
+      error: expect.stringContaining(
+        invalidPath ? "strict relative POSIX path" : "backupResources",
+      ),
+      ...(!invalidPath && { diagnosticCode: "backup-resource-declaration-invalid" }),
     });
   });
 

@@ -74,67 +74,43 @@ module.exports = { id: ${JSON.stringify(id)}, kind: "context-engine", register(a
       slots: { memory: "none", contextEngine: engineId },
     },
   });
-  return { workspaceDir, imported, factories, config };
+  const load = (rootConfig: OpenClawConfig) =>
+    loadOpenClawPlugins({
+      config: rootConfig,
+      workspaceDir,
+      cache: false,
+      runtimeSideEffects: true,
+    });
+  return { imported, factories, config, load };
 }
+
+const approvals = (legacy = true, declared = true) => ({
+  "existing-engine": { enabled: legacy },
+  "new-owner": { enabled: declared },
+});
 
 it.each([true, false])(
   "rejects eligible legacy/declared collision before either import: legacy first=%s",
   (legacyFirst) => {
     const fixture = setupOwners(legacyFirst);
-    expect(() =>
-      loadOpenClawPlugins({
-        config: fixture.config({
-          "existing-engine": { enabled: true },
-          "new-owner": { enabled: true },
-        }),
-        workspaceDir: fixture.workspaceDir,
-        cache: false,
-        runtimeSideEffects: true,
-      }),
-    ).toThrow(/ambiguous approved owners: existing-engine, new-owner/);
+    expect(() => fixture.load(fixture.config(approvals()))).toThrow(
+      /ambiguous approved owners: existing-engine, new-owner/,
+    );
     expect(fs.existsSync(fixture.imported)).toBe(false);
     expect(fs.existsSync(fixture.factories)).toBe(false);
   },
 );
 
-it.each<{
-  policy: string;
-  entries: NonNullable<OpenClawConfig["plugins"]>["entries"];
-  deny?: string[];
-  winner: string;
-}>([
-  { policy: "unapproved legacy", entries: { "new-owner": { enabled: true } }, winner: "new-owner" },
-  {
-    policy: "denied legacy",
-    entries: { "existing-engine": { enabled: false }, "new-owner": { enabled: true } },
-    winner: "new-owner",
-  },
-  {
-    policy: "denied declaration",
-    entries: { "existing-engine": { enabled: true }, "new-owner": { enabled: false } },
-    winner: "existing-engine",
-  },
-  {
-    policy: "denylisted legacy",
-    entries: { "existing-engine": { enabled: true }, "new-owner": { enabled: true } },
-    deny: ["existing-engine"],
-    winner: "new-owner",
-  },
-  {
-    policy: "denylisted declaration",
-    entries: { "existing-engine": { enabled: true }, "new-owner": { enabled: true } },
-    deny: ["new-owner"],
-    winner: "existing-engine",
-  },
-])("allows $policy and assembles with $winner", async ({ entries, deny, winner }) => {
+it.each<[string, NonNullable<OpenClawConfig["plugins"]>["entries"], string, string[]?]>([
+  ["unapproved legacy", { "new-owner": { enabled: true } }, "new-owner"],
+  ["denied legacy", approvals(false), "new-owner"],
+  ["denied declaration", approvals(true, false), "existing-engine"],
+  ["denylisted legacy", approvals(), "new-owner", ["existing-engine"]],
+  ["denylisted declaration", approvals(), "existing-engine", ["new-owner"]],
+])("allows %s and assembles with the eligible owner", async (_policy, entries, winner, deny) => {
   const fixture = setupOwners(false);
   const config = fixture.config(entries, "existing-engine", deny);
-  const registry = loadOpenClawPlugins({
-    config,
-    workspaceDir: fixture.workspaceDir,
-    cache: false,
-    runtimeSideEffects: true,
-  });
+  const registry = fixture.load(config);
   try {
     expect(registry.contextEngines.get("existing-engine")?.owner).toBe(`plugin:${winner}`);
     const engine = await resolveContextEngine(config);
@@ -153,15 +129,7 @@ it.each<{
 
 it("loads independently approved capabilities when the engine selector does not collide", async () => {
   const fixture = setupOwners(true, "new-engine");
-  const registry = loadOpenClawPlugins({
-    config: fixture.config(
-      { "existing-engine": { enabled: true }, "new-owner": { enabled: true } },
-      "none",
-    ),
-    workspaceDir: fixture.workspaceDir,
-    cache: false,
-    runtimeSideEffects: true,
-  });
+  const registry = fixture.load(fixture.config(approvals(), "none"));
   try {
     expect(fs.readFileSync(fixture.imported, "utf8").trim().split("\n")).toEqual([
       "existing-engine",

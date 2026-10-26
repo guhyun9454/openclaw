@@ -35,7 +35,7 @@ function captureRegisteredPluginApi(handlers: Parameters<typeof buildPluginApi>[
 }
 
 describe("plugin api lifecycle", () => {
-  it("omits retired registrations and exposes runtime capabilities through grouped namespaces", () => {
+  it("omits retired top-level registrations", () => {
     const api = captureRegisteredPluginApi({});
     for (const method of [
       "emitAgentEvent",
@@ -54,25 +54,20 @@ describe("plugin api lifecycle", () => {
     ]) {
       expect(method in api).toBe(false);
     }
-    expect(
-      api.agent.events.emitAgentEvent({ runId: "run", stream: "lifecycle", data: {} }),
-    ).toEqual({
-      emitted: false,
-      reason: "not wired",
-    });
   });
 
   it("returns inert results for unwired runtime and scheduler handlers", async () => {
     const api = createPluginApi();
     const sessionKey = "agent:main:main";
+    const turn = { sessionKey, text: "queued" };
 
     expect({
       event: api.agent.events.emitAgentEvent({ runId: "run", stream: "lifecycle", data: {} }),
       setContext: api.runContext.setRunContext({ runId: "run", namespace: "workflow", value: 1 }),
       getContext: api.runContext.getRunContext({ runId: "run", namespace: "workflow" }),
       registerJob: api.registerSessionSchedulerJob({ id: "job", sessionKey, kind: "session-turn" }),
-      injection: await api.enqueueNextTurnInjection({ sessionKey, text: "queued" }),
-      steering: await api.session.workflow.steerActiveRun({ sessionKey, text: "guidance" }),
+      injection: await api.enqueueNextTurnInjection(turn),
+      steering: await api.session.workflow.steerActiveRun(turn),
       attachment: await api.session.workflow.sendSessionAttachment({
         sessionKey,
         files: [{ path: "/tmp/attachment.txt" }],
