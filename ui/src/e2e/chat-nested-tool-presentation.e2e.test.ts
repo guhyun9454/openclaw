@@ -132,7 +132,7 @@ suite.define(() => {
       const diagnostics = activityBody.locator(".chat-tool-msg-body", {
         hasText: "gh: command not found",
       });
-      expect(await diagnostics.isVisible()).toBe(true);
+      await diagnostics.waitFor({ state: "visible" });
       await activityBody.locator(".chat-tool-wrapper-details > summary").click();
       await activityBody.getByText(wrapperCode, { exact: false }).first().waitFor();
       await summary.click();

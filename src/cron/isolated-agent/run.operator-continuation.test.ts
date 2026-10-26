@@ -949,8 +949,8 @@ it.each([
       } else {
         expect(JSON.stringify(offered)).toContain('"inspect"');
         expect(JSON.stringify(offered)).toContain("merge");
-        expect(rejected).toBeTruthy();
-        expect(results).toEqual([]);
+        expect(rejected).toBeUndefined();
+        expect(results).toMatchObject([{ details: { gated: true } }, { details: { gated: true } }]);
       }
     }
     if (
