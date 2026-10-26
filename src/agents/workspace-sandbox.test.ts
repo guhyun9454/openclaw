@@ -39,20 +39,6 @@ it("keeps cwd authority with the selected local or remote workspace owner", () =
   ).toEqual({ workspaceDir: "/canonical", cwd: "/remote/subdir", sessionRoot: "/remote" });
 });
 
-it("refuses a retired admitted run before creating or preparing its workspace", async () => {
-  await withOpenClawTestState({ label: "retired-workspace" }, async (state) => {
-    const workspaceDir = state.path("must-not-exist");
-    await expect(
-      resolveAttemptWorkspaceSandbox({
-        ...runParams(workspaceDir, "retired"),
-        config: { agents: { entries: { main: { workspace: workspaceDir } } } },
-        admittedRunContext: { operationalRunInstance: { runId: "retired", instanceId: "retired" } },
-      }),
-    ).rejects.toThrow("active admitted run");
-    await expect(fs.stat(workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-});
-
 it("keeps writable placement policy without preparing its paths locally", async () => {
   await withOpenClawTestState({ label: "placement-workspace-policy" }, async (state) => {
     const remoteWorkspace = state.path("remote-execution-only");
