@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const exec = vi.hoisted(() => vi.fn<typeof import("./exec-file.js").execFileUtf8>());
-vi.mock("./exec-file.js", () => ({ execFileUtf8: exec }));
+vi.mock("./exec-file.js", async (original) => ({
+  ...(await original<typeof import("./exec-file.js")>()),
+  execFileUtf8: exec,
+}));
 import { createSystemdBusctlQuery } from "./systemd-busctl-query.js";
 import { nativeExit } from "./systemd-exec.test-support.js";
 
