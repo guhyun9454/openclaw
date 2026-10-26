@@ -98,16 +98,13 @@ it.each([
     reserveConcurrentInputs();
     const prepared = reserveInput(reservedMiB);
     const options = storeOptions("x".repeat(inputMiB * MIB));
-    try {
-      await expect(
-        broker.open<FixtureOperations>(options, undefined, undefined, {
-          preparation: "y".repeat(preparationMiB * MIB),
-        }),
-      ).rejects.toMatchObject({ code: "overloaded" });
-      expect(existsSync(options.databasePath)).toBe(false);
-    } finally {
-      prepared.release();
-    }
+    await expect(
+      broker.open<FixtureOperations>(options, undefined, undefined, {
+        preparation: "y".repeat(preparationMiB * MIB),
+      }),
+    ).rejects.toMatchObject({ code: "overloaded" });
+    expect(existsSync(options.databasePath)).toBe(false);
+    prepared.release();
     const store = await broker.open<FixtureOperations>({ ...options, input: undefined });
     expect(await store?.execute({ type: "read", input: undefined })).toEqual([]);
     await store?.close();

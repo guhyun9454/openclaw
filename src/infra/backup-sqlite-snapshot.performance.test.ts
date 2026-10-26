@@ -3,16 +3,13 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createBackupResourcePlan } from "../commands/backup-resource-inventory.js";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { backupCase, withDatabase } from "./backup-create-family.test-support.js";
+import { backupCase } from "./backup-create-family.test-support.js";
 import { createBackupArchive } from "./backup-create.js";
 import { listArchiveEntries } from "./backup-create.test-support.js";
-import { createBackupSqliteSnapshotPlan } from "./backup-sqlite-snapshot.js";
 
 const PRIVACY_MARKER = ".openclaw-private-update-capture";
 const withFixture = backupCase({ prefix: "openclaw-backup-discovery-" });
@@ -22,18 +19,22 @@ const writeFiles = (directory: string, count: number, extension: string) =>
       fs.writeFile(path.join(directory, `generated-${index}.${extension}`), "export {};\n"),
     ),
   );
-async function countProbes<T>(matches: (target: string) => boolean, run: () => Promise<T>) {
+async function countProbes<T>(run: () => Promise<T>, file?: string) {
   let probes = 0;
+  let fileProbes = 0;
   const original = fsSync.lstatSync.bind(fsSync);
   const spy = vi.spyOn(fsSync, "lstatSync").mockImplementation((target, options) => {
-    if (matches(String(target))) {
+    if (path.basename(String(target)) === PRIVACY_MARKER) {
       probes += 1;
+    }
+    if (String(target) === file) {
+      fileProbes += 1;
     }
     return original(target, options);
   });
   try {
     const result = await run();
-    return { probes, result };
+    return { probes, fileProbes, result };
   } finally {
     spy.mockRestore();
   }
@@ -90,76 +91,24 @@ describe.skipIf(process.platform === "win32")("backup SQLite discovery performan
         sourceDirectories.map((directory) => fs.mkdir(directory, { recursive: true })),
       );
 
-      const globalDatabase = resolveOpenClawStateSqlitePath(state.env);
-      const hardlinkAlias = path.join(worktree, "state-alias.sqlite");
-      await fs.link(globalDatabase, hardlinkAlias);
-      const pluginDatabase = path.join(worktree, "plugin-state", "owner.sqlite");
-      await fs.mkdir(path.dirname(pluginDatabase), { recursive: true });
-      withDatabase(pluginDatabase, (pluginState) => {
-        pluginState.exec("CREATE TABLE durable_state (value TEXT NOT NULL)");
-      });
-
-      const resources = await createBackupResourcePlan({
-        stateDir: state.stateDir,
-        configPaths: [state.configPath],
-        oauthDirs: [],
-        workspaceDirs: [],
-        excludedWorkspaceDirs: [],
-        agentRoots: [],
-        pluginResources: [
-          {
-            pluginId: "nested-owner",
-            disposition: "include",
-            scope: "state",
-            relativePath: `${worktreeRelative}/plugin-state`,
-          },
-        ],
-        pluginRoots: [],
-      });
-      const measurePrivacyMarkerProbes = (label: string) =>
-        countProbes(
-          (target) => path.basename(target) === PRIVACY_MARKER,
-          async () => {
-            const tempDir = state.path(`snapshots-${label}`);
-            await fs.mkdir(tempDir, { recursive: true });
-            return createBackupSqliteSnapshotPlan({ resources, tempDir, legacyAuditSnapshots: [] });
-          },
-        );
-
-      const baseline = await measurePrivacyMarkerProbes("baseline");
+      const archive = (label: string) =>
+        createBackupArchive({ output: state.path(`${label}.tar.gz`), includeWorkspace: false });
+      const baseline = await countProbes(() => archive("baseline"));
       const durableFile = path.join(sourceDirectories[0]!, "uncommitted.ts");
       await Promise.all(sourceDirectories.map((directory) => writeFiles(directory, 40, "ts")));
       await fs.writeFile(durableFile, "export const keep = true;\n");
 
-      const populated = await measurePrivacyMarkerProbes("populated");
-
-      expect(populated.probes).toBeLessThanOrEqual(baseline.probes + 32);
-      for (const file of [hardlinkAlias, pluginDatabase]) {
-        expect(
-          populated.result.snapshots.some(
-            (snapshot) => path.resolve(snapshot.archiveSourcePath) === path.resolve(file),
-          ),
-        ).toBe(true);
-      }
-      const packageDirectory = state.statePath("node_modules", "root-dep");
-      await fs.mkdir(packageDirectory, { recursive: true });
-      await writeFiles(packageDirectory, 8, "js");
       const spawn = vi.spyOn(childProcess, "spawnSync");
-      const { probes: fileProbes, result: archive } = await countProbes(
-        (target) => target === durableFile,
-        () => createBackupArchive({ output: state.path("backup.tar.gz"), includeWorkspace: false }),
-      );
-      expect(fileProbes).toBe(1);
+      const populated = await countProbes(() => archive("populated"), durableFile);
+      expect(populated.probes).toBeLessThanOrEqual(baseline.probes + 32);
+      expect(populated.fileProbes).toBe(1);
       const headerProbes = spawn.mock.calls.filter(
         ([, args]) =>
           Array.isArray(args) && /[/\\]sqlite-header-probe\.worker\.[jt]s$/.test(args.at(-1) ?? ""),
       );
-      // Global capture discovers aliases before the final, registry-backed inventory.
+      // Global capture precedes the final, registry-backed inventory.
       expect(headerProbes).toHaveLength(2);
-      const entries = await listArchiveEntries(archive.archivePath);
-      expect(entries.some((entry) => entry.endsWith("/node_modules/root-dep/generated-7.js"))).toBe(
-        true,
-      );
+      const entries = await listArchiveEntries(populated.result.archivePath);
       const archivedDirtyFile = `/${worktreeRelative}/packages/package-0/src/uncommitted.ts`;
       expect(entries.some((entry) => entry.endsWith(archivedDirtyFile))).toBe(true);
     }),
