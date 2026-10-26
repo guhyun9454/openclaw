@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
-import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { SqliteJsonlReadBudgetExceededError } from "../../infra/sqlite-jsonl-budget-error.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -9,6 +8,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { loadTranscriptEvents } from "./session-accessor.js";
+import { withoutHostSql } from "./session-accessor.observation.test-support.js";
 import { appendTranscriptEvent } from "./session-accessor.sqlite-transcript-write.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { transcriptScope } from "./session-transcript-fixture.test-support.js";
@@ -17,16 +17,6 @@ import * as targetWorker from "./session-transcript-read-worker-runtime.js";
 function message(id: string, parentId: string | null, role: string, content: string) {
   return { type: "message", id, parentId, message: { role, content } };
 }
-async function withoutHostSql(run: () => Promise<void>) {
-  const sql = observeHostDataSql();
-  try {
-    await run();
-    expect(sql.queries).toEqual([]);
-  } finally {
-    sql.restore();
-  }
-}
-
 const events = [
   { type: "session", id: "raw-events", version: 3 },
   message("question", null, "user", "雪🦞"),
