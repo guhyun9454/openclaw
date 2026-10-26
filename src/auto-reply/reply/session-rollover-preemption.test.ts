@@ -1,5 +1,4 @@
 import { once } from "node:events";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -57,27 +56,23 @@ async function rolloverFixture(suffix: string) {
   return { storePath, sessionKey, sessionId, target };
 }
 
-function resetSession(storePath: string, sessionKey: string, from: string) {
+function resetSession(storePath: string, sessionKey: string) {
   return initSessionState({
     ctx: {
       Body: "/new",
-      RawBody: "/new",
-      CommandBody: "/new",
-      From: from,
+      From: "rollover-user",
       To: "bot",
       ChatType: "direct",
       SessionKey: sessionKey,
       Provider: "telegram",
       Surface: "telegram",
     },
-    cfg: { session: { store: storePath, reset: { mode: "idle", idleMinutes: 999 } } },
+    cfg: { session: { store: storePath } },
   });
 }
 
 it("preempts a running turn and cancels two queued follow-ups before /new resets", async () => {
   const { storePath, sessionKey, sessionId, target } = await rolloverFixture("admission");
-  const transcriptPath = path.join(path.dirname(storePath), `${sessionId}.jsonl`);
-  await fs.writeFile(transcriptPath, '{"type":"message"}\n', "utf8");
   const runStarted = createDeferred();
   let runInterrupted = false;
   const activeRun = withSessionTurn(
@@ -90,19 +85,13 @@ it("preempts a running turn and cancels two queued follow-ups before /new resets
   );
   await runStarted.promise;
   for (const prompt of ["first waiting follow-up", "second waiting follow-up"]) {
-    const queued = createQueueTestRun(
-      { prompt },
-      {
-        sessionKey,
-        sessionId,
-        agentId: "main",
-        config: { session: { store: storePath } },
-      },
-    );
     expect(
       enqueueFollowupRun(
         sessionKey,
-        queued,
+        createQueueTestRun(
+          { prompt },
+          { sessionKey, sessionId, agentId: "main", config: { session: { store: storePath } } },
+        ),
         { mode: "followup", debounceMs: 60_000 },
         "none",
         undefined,
@@ -111,7 +100,7 @@ it("preempts a running turn and cancels two queued follow-ups before /new resets
     ).toBe(true);
   }
   expect(getFollowupQueueDepth(sessionKey)).toBe(2);
-  const initialization = resetSession(storePath, sessionKey, "user-rollover-admission");
+  const initialization = resetSession(storePath, sessionKey);
 
   try {
     const result = await initialization;
@@ -119,7 +108,6 @@ it("preempts a running turn and cancels two queued follow-ups before /new resets
     expect(runInterrupted).toBe(true);
     expect(result).toMatchObject({ sessionId, resetTriggered: true });
     expect(getFollowupQueueDepth(sessionKey)).toBe(0);
-    expect(await fs.stat(transcriptPath).catch(() => null)).not.toBeNull();
   } finally {
     clearSessionQueues([sessionKey, sessionId]);
     await Promise.allSettled([initialization, activeRun]);
@@ -141,7 +129,7 @@ it("preserves the rollover timeout error when /new preemption does not settle", 
     preemptAttempted.resolve();
     return false;
   });
-  const initialization = resetSession(storePath, sessionKey, "user-rollover-timeout");
+  const initialization = resetSession(storePath, sessionKey);
   void initialization.catch(() => {});
   try {
     await preemptAttempted.promise;

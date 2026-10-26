@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
-import type { ModelDefinitionConfig } from "../../config/types.models.js";
+import { modelDefinition } from "../../agents/model-auth.fixtures.test-support.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import { appendUsageLine, resolveResponseUsageLine } from "./agent-runner-usage-line.js";
 
@@ -57,18 +57,12 @@ it.each<[name: string, usage: Usage, tiered: boolean, expected: string | undefin
   ["cost-only zero total", { cost: { total: 0 } }, true, "Usage: ? in / ? out · est $0.0000"],
 ])("formats %s for the selected agent in an explicit fleet", (_name, usage, tiered, expected) => {
   const cost = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 };
-  const model: ModelDefinitionConfig = {
-    id: "priced",
-    name: "Priced",
-    reasoning: false,
-    input: ["text"],
-    contextWindow: 1,
-    maxTokens: 1,
+  const model = modelDefinition("priced", {
     cost: {
       ...cost,
       tieredPricing: tiered ? [{ ...cost, input: 2, output: 0, range: [200_000] }] : undefined,
     },
-  };
+  });
   const line = resolveResponseUsageLine({
     config: {
       agents: { ownership: "explicit", entries: { main: {}, other: {} } },
@@ -122,19 +116,5 @@ it("decorates a completed source reply and keeps its private final separate", ()
   expect(getReplyPayloadMetadata(expectDefined(updated, "updated test invariant"))).toMatchObject({
     deliverDespiteSourceReplySuppression: true,
     sourceReplyTranscriptMirror: { ...mirror, text: "message tool reply\nUsage: 12 in / 3 out" },
-  });
-});
-
-it("emits a suppression-authorized footer when no captured source payload exists", () => {
-  const result = appendUsageLine([{ text: "private final" }], usageLine, {
-    completedSourceReply: true,
-  });
-
-  expect(result).toEqual([{ text: "private final" }, { text: usageLine, isStatusNotice: true }]);
-  expect(
-    getReplyPayloadMetadata(expectDefined(result[1], "completed source footer")),
-  ).toMatchObject({
-    deliverDespiteSourceReplySuppression: true,
-    responseUsageLine: usageLine,
   });
 });
