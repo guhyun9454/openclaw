@@ -1,5 +1,5 @@
 import type { MSTeamsConfig } from "openclaw/plugin-sdk/config-contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { MSTeamsConfigSchema } from "../config-api.js";
 
 function account(overrides: MSTeamsConfig = {}): MSTeamsConfig {
@@ -13,13 +13,89 @@ function account(overrides: MSTeamsConfig = {}): MSTeamsConfig {
 function named(overrides: MSTeamsConfig = {}, root: MSTeamsConfig = {}): MSTeamsConfig {
   return { tenantId: "tenant-id", accounts: { support: account(overrides) }, ...root };
 }
-function sibling(appId: string, path: string, enabled = true): MSTeamsConfig {
-  return account({ appId, webhook: { path }, enabled });
+function identities(accounts: MSTeamsConfig["accounts"], root: MSTeamsConfig = {}): MSTeamsConfig {
+  return { tenantId: "tenant-id", ...root, accounts };
 }
-function expectValid(config: unknown, valid: boolean) {
+const sibling = (appId: string, path: string, enabled = true) =>
+  account({ appId, webhook: { path }, enabled });
+const expectValid = (config: unknown, valid: boolean) =>
   expect(MSTeamsConfigSchema.safeParse(config).success).toBe(valid);
-}
-function expectIssue(config: MSTeamsConfig, key: string, message: string) {
+
+afterEach(() => vi.unstubAllEnvs());
+
+it.each([
+  [
+    "SSO inheritance",
+    named({ sso: { enabled: true } }, { sso: { connectionName: "graph" } }),
+    true,
+  ],
+  [
+    "SSO empty override",
+    named({ sso: { connectionName: "" } }, { sso: { enabled: true, connectionName: "graph" } }),
+    false,
+  ],
+  ["missing tenant", named({}, { tenantId: undefined }), false],
+  ["blank secret", named({ appPassword: "   " }), false],
+  ["federation without identity", named({ authType: "federated", appPassword: undefined }), false],
+  [
+    "disabled duplicate route",
+    identities({
+      default: sibling("primary-app-id", "/hooks/3978"),
+      secondary: sibling("secondary-app-id", "/hooks/3978", false),
+    }),
+    true,
+  ],
+  [
+    "logical id matching appId",
+    named({}, { appId: "support", appPassword: "primary-secret" }),
+    true,
+  ],
+  [
+    "inherited certificate",
+    named(
+      { appPassword: undefined },
+      {
+        authType: "federated",
+        certificatePath: "/secure/secondary.pem",
+      },
+    ),
+    true,
+  ],
+  ["unsupported host", { cloud: "USGovDoD", serviceUrl: "https://dod.example.mil/teams" }, false],
+  [
+    "China with public host",
+    { cloud: "China", serviceUrl: "https://smba.trafficmanager.net/teams" },
+    false,
+  ],
+  ["public with China host", { serviceUrl: "https://msteams.botframework.azure.cn/teams" }, false],
+  ["non-public without URL", { cloud: "USGov" }, false],
+] as const)("validates %s", (_name, config, valid) => expectValid(config, valid));
+
+it.each([
+  [
+    "canonical account id",
+    identities(
+      {
+        "Support Bot": account(),
+        "support-bot": sibling("support-shadow-app-id", "/hooks/3980"),
+      },
+      { webhook: { path: "/api/messages" } },
+    ),
+    "support-bot",
+    'duplicate canonical account id "support-bot"',
+  ],
+  [
+    "root/default identity",
+    identities(
+      {
+        Default: sibling("default-app-id", "/hooks/3978"),
+      },
+      { appId: "root-app-id", appPassword: "root-secret" },
+    ),
+    "Default",
+    "default Teams identity",
+  ],
+] as const)("rejects conflicting %s", (_name, config, key, message) => {
   const result = MSTeamsConfigSchema.safeParse(config);
   expect(result.success).toBe(false);
   if (!result.success) {
@@ -30,136 +106,37 @@ function expectIssue(config: MSTeamsConfig, key: string, message: string) {
       }),
     );
   }
-}
+});
 
-describe("msteams config schema", () => {
-  afterEach(() => vi.unstubAllEnvs());
+it("does not reserve a partial environment default app ID", () => {
+  vi.stubEnv("MSTEAMS_APP_ID", "support-app-id");
+  expectValid(named(), true);
+});
 
-  it("validates named SSO after merging root and account settings", () => {
-    expectValid(named({ sso: { enabled: true } }, { sso: { connectionName: "graph" } }), true);
-    expectValid(
-      named({ sso: { connectionName: "" } }, { sso: { enabled: true, connectionName: "graph" } }),
-      false,
-    );
-  });
+it("honors a managed identity opt-out when detecting an environment default", () => {
+  vi.stubEnv("MSTEAMS_APP_ID", "support-app-id");
+  vi.stubEnv("MSTEAMS_TENANT_ID", "environment-tenant-id");
+  vi.stubEnv("MSTEAMS_AUTH_TYPE", "federated");
+  vi.stubEnv("MSTEAMS_USE_MANAGED_IDENTITY", "true");
+  expectValid(named({ webhook: { path: "/hooks/3978" } }, { useManagedIdentity: false }), true);
+});
 
-  it("does not reserve a partial environment default app ID", () => {
-    vi.stubEnv("MSTEAMS_APP_ID", "support-app-id");
-    expectValid(named(), true);
-  });
-
-  it("honors a managed identity opt-out when detecting an environment default", () => {
-    vi.stubEnv("MSTEAMS_APP_ID", "support-app-id");
-    vi.stubEnv("MSTEAMS_TENANT_ID", "environment-tenant-id");
-    vi.stubEnv("MSTEAMS_AUTH_TYPE", "federated");
-    vi.stubEnv("MSTEAMS_USE_MANAGED_IDENTITY", "true");
-    expectValid(named({ webhook: { path: "/hooks/3978" } }, { useManagedIdentity: false }), true);
-  });
-
-  it("rejects named Teams bot accounts with duplicate canonical account ids", () => {
-    expectIssue(
-      named(
-        {},
-        {
-          webhook: { path: "/api/messages" },
-          accounts: {
-            "Support Bot": account(),
-            "support-bot": sibling("support-shadow-app-id", "/hooks/3980"),
-          },
-        },
-      ),
-      "support-bot",
-      'duplicate canonical account id "support-bot"',
-    );
-  });
-
-  it("rejects simultaneous root and canonical default account alias identity definitions", () => {
-    expectIssue(
-      named(
-        {},
-        {
-          appId: "root-app-id",
-          appPassword: "root-secret",
-          accounts: { Default: sibling("default-app-id", "/hooks/3978") },
-        },
-      ),
-      "Default",
-      "default Teams identity",
-    );
-  });
-
-  it("rejects named accounts that collide with an environment-backed default route", () => {
-    vi.stubEnv("MSTEAMS_APP_ID", "env-default-app");
-    vi.stubEnv("MSTEAMS_APP_PASSWORD", "env-default-password");
-    vi.stubEnv("MSTEAMS_TENANT_ID", "env-tenant-id");
-    expectValid(
-      named({ webhook: { path: "/api/messages" } }, { tenantId: "shared-tenant-id" }),
-      false,
-    );
-    expectValid(
-      named(
-        { appId: "env-default-app" },
-        { tenantId: "shared-tenant-id", webhook: { path: "/hooks/3980" } },
-      ),
-      false,
-    );
-  });
-
-  it.each([
-    ["missing tenant ID", named({}, { tenantId: undefined })],
-    ["whitespace-only secret", named({ appPassword: "   " })],
-    [
-      "federation without a certificate or managed identity",
-      named({ authType: "federated", appPassword: undefined }),
-    ],
-  ])("rejects enabled named accounts with %s", (_name, config) => {
-    expectValid(config, false);
-  });
-
-  it("allows duplicate webhook paths when one account is disabled", () => {
-    expectValid(
-      named(
-        {},
-        {
-          accounts: {
-            default: sibling("primary-app-id", "/hooks/3978"),
-            secondary: sibling("secondary-app-id", "/hooks/3978", false),
-          },
-        },
-      ),
-      true,
-    );
-  });
-
-  it("allows an enabled logical account id matching another bot's appId", () => {
-    expectValid(named({}, { appId: "support", appPassword: "primary-secret" }), true);
-  });
-
-  it("accepts enabled named federated accounts with inherited certificate config", () => {
-    expectValid(
-      named(
-        { appPassword: undefined },
-        { authType: "federated", certificatePath: "/secure/secondary.pem" },
-      ),
-      true,
-    );
-  });
-
-  it.each([
-    [
-      "unsupported Teams serviceUrl hosts",
-      { cloud: "USGovDoD", serviceUrl: "https://dod.example.mil/teams" },
-    ],
-    [
-      "non-China hosts in China cloud",
-      { cloud: "China", serviceUrl: "https://smba.trafficmanager.net/teams" },
-    ],
-    [
-      "China hosts outside China cloud",
-      { serviceUrl: "https://msteams.botframework.azure.cn/teams" },
-    ],
-    ["non-public clouds without serviceUrl", { cloud: "USGov" }],
-  ])("rejects %s", (_name, config) => {
-    expectValid(config, false);
-  });
+it("rejects named accounts that collide with an environment-backed default route", () => {
+  vi.stubEnv("MSTEAMS_APP_ID", "env-default-app");
+  vi.stubEnv("MSTEAMS_APP_PASSWORD", "env-default-password");
+  vi.stubEnv("MSTEAMS_TENANT_ID", "env-tenant-id");
+  expectValid(
+    named({ webhook: { path: "/api/messages" } }, { tenantId: "shared-tenant-id" }),
+    false,
+  );
+  expectValid(
+    named(
+      { appId: "env-default-app" },
+      {
+        tenantId: "shared-tenant-id",
+        webhook: { path: "/hooks/3980" },
+      },
+    ),
+    false,
+  );
 });
