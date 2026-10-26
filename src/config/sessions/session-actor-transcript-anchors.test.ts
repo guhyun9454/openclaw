@@ -33,17 +33,10 @@ function fixture() {
     lifecycleRevision: "lifecycle",
     activeWriterRunId: "run",
   });
-  hot.transcript = {
-    ...hot.transcript,
-    watermark: { generation: "generation", maxSeq: 4 },
-    version: { generation: "generation", rawSeq: 4, updatedAt: 1 },
-    anchors: [user, reply],
-  };
-  const message = {
-    role: "assistant",
-    content: [{ type: "text", text: "The answer" }],
-    __openclaw: { runId: "run" },
-  };
+  hot.transcript.watermark = { generation: "generation", maxSeq: 4 };
+  hot.transcript.version = { generation: "generation", rawSeq: 4, updatedAt: 1 };
+  hot.transcript.anchors = [user, reply];
+  const message = { role: "assistant", content: "answer", __openclaw: { runId: "run" } };
   const tail = {
     coveredAfterSeq: 2,
     events: [

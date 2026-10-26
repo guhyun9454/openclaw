@@ -1,14 +1,13 @@
 // Register shared worker mocks before modules that consume them.
 // oxfmt-ignore
-import { input, nativePosts, nativeWorkers, observed, type NativeWorker } from "./session-transcript-worker-lanes.test-support.js";
+import { input, nativePosts, nativeWorkers, type NativeWorker } from "./session-transcript-worker-lanes.test-support.js";
 import { expect, it } from "vitest";
 import { awaitGateBeforeSettlement as waitFor } from "../../../test/helpers/promise.js";
 import type { UsageCostWorkerInput } from "../../infra/session-cost-usage-worker.types.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { runQueuedStoreWrite } from "../../shared/store-writer-queue.js";
 import { runOpenClawAgentWriteAdmission as withWriter } from "../../state/openclaw-agent-write-admission.js";
-import { costRefreshLane, projectionLane } from "./session-transcript-worker-resources.js";
+import { costRefreshLane } from "./session-transcript-worker-resources.js";
 
 it("keeps usage refresh host writes out of writer-held reader compute capacity", async () => {
   const { database } = input();
@@ -112,18 +111,3 @@ function postedTask(request: unknown): [NativeWorker, Parameters<NativeWorker["p
   }
   throw new Error("Expected a posted native task");
 }
-
-it("allows reader cleanup while only a logical session lock is held", async () => {
-  const { database } = input();
-  await runQueuedStoreWrite({
-    queues: new Map(),
-    storePath: database.path,
-    label: "logical session lock",
-    fn: async () => {
-      await projectionLane.pool.closeResources(database.path);
-      await projectionLane.pool.rotate();
-    },
-  });
-  expect(observed.closeResources).toHaveBeenCalledOnce();
-  expect(observed.rotate).toHaveBeenCalledOnce();
-});

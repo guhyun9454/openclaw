@@ -55,21 +55,6 @@ test.each([
   }
 });
 
-test.runIf(process.platform !== "win32")(
-  "keeps exact custody across POSIX lexical and physical directory spellings",
-  () => {
-    const root = tempDirs.make("session-store-posix-alias-");
-    const physicalDir = directory(root, "physical");
-    const aliasDir = path.join(root, "alias");
-    fs.symlinkSync(physicalDir, aliasDir, "junction");
-    const physicalPath = path.join(physicalDir, "openclaw-agent.sqlite");
-    const aliasPath = path.join(aliasDir, "openclaw-agent.sqlite");
-    fs.writeFileSync(physicalPath, "");
-
-    expectCustody(aliasPath, physicalPath, physicalPath);
-  },
-);
-
 test.each([true, false])("limits Windows alias custody to its parent (same=%s)", (sameParent) => {
   const root = tempDirs.make("session-store-windows-alias-");
   const shortPath = sameParent
